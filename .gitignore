@@ -220,3 +220,6 @@ __marimo__/
 .agent/
 .claude/
 .opencode/
+.agents/skills/caveman/README.md
+.agents/skills/caveman/SKILL.md
+skills-lock.json
