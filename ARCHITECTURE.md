@@ -52,13 +52,6 @@
 C4-style system context diagram showing all major components and their interactions:
 
 ```mermaid
----
-config:
-  theme: redux
-  layout: elk
-  fontFamily: '''Open Sans Variable'', sans-serif'
-  look: classic
----
 graph TB
     subgraph "PyME Client Machines (N servers)"
         FB1["FluentBit Agent"]
@@ -171,13 +164,6 @@ graph TB
 ### 3.1 Pipeline Flow Diagram
 
 ```mermaid
----
-config:
-  theme: redux
-  layout: elk
-  fontFamily: '''Open Sans Variable'', sans-serif'
-  look: classic
----
 flowchart LR
     FB["FluentBit (PyME machines)"] -->|raw logs| K1["Kafka: raw-logs"]
     K1 -->|consume| LI["log-ingestor (Drain3)"]
