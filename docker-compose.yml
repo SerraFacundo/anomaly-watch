@@ -1,0 +1,61 @@
+# Anomaly Watch — demo-phase stack.
+#
+# This is deliberately the *slice that exists*, not the full topology in
+# ARCHITECTURE.md. Kafka, Ollama, Nginx, api, rag-engine and notifier are the
+# target end state; they are not here because they have no implementation yet and
+# an empty container proves nothing.
+#
+# Demo path:  log file -> tools/replay.py (Drain3) -> detector-service -> postgres
+#
+# Before first run, populate the model cache on the host:
+#     uv run python ml/download_models.py
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: anomaly
+      POSTGRES_PASSWORD: anomaly
+      POSTGRES_DB: anomaly_watch
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anomaly -d anomaly_watch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [anomaly-watch]
+    # Internal only. Nothing but the future Nginx should ever be host-exposed.
+    expose: ["5432"]
+
+  detector:
+    build:
+      context: .
+      dockerfile: services/detector/Dockerfile
+    environment:
+      # Promoting a model is this line plus a restart. Nothing else.
+      DETECTOR_MODEL_KEY: "${DETECTOR_MODEL_KEY:-baseline-bert}"
+      DETECTOR_THRESHOLD: "${DETECTOR_THRESHOLD:-0.5}"
+      DETECTOR_MAX_BATCH_SIZE: "${DETECTOR_MAX_BATCH_SIZE:-256}"
+      DETECTOR_MAX_LENGTH: "${DETECTOR_MAX_LENGTH:-256}"
+      # Bounded so inference cannot starve the co-located services on a single
+      # PyME host.
+      DETECTOR_NUM_THREADS: "${DETECTOR_NUM_THREADS:-2}"
+      HF_HUB_OFFLINE: "1"
+      ANOMALY_WATCH_MODEL_CACHE: /models
+    volumes:
+      # Read-only: the service loads weights, it never writes them.
+      - ./models/cache:/models:ro
+      - ./ml/eval/results:/app/ml/eval/results:ro
+    networks: [anomaly-watch]
+    expose: ["8003"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+
+networks:
+  anomaly-watch:
+    driver: bridge

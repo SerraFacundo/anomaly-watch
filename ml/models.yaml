@@ -1,0 +1,78 @@
+# Model registry — the single source of truth for every model the stack loads.
+#
+# `revision` is an exact commit SHA, never a branch name. Branches move; a moved
+# branch means the model you evaluated is not the model you deployed.
+# `ml/download_models.py` resolves and writes the SHAs back into this file.
+#
+# Roles:
+#   baseline  — off-the-shelf checkpoints, used for phase-0 smoke and as eval
+#               comparison points. Never the shipped default.
+#   finetune_base — what ml/train/finetune.py starts from.
+#   embedding — RAG retrieval embeddings (ARCHITECTURE.md 4.1 / 8.2).
+#   deferred  — researched, deliberately not adopted. Kept so the decision is
+#               visible instead of being rediscovered later.
+
+default: baseline-bert
+
+models:
+  baseline-bert:
+    repo_id: AungMoonLord/bert-log-anomaly-detection
+    revision: 9ece304f330c8fa08a9ba825fd3d1adcf746aaf6
+    license: apache-2.0
+    role: baseline
+    task: text-classification
+    # This checkpoint ships NO id2label, so transformers invents LABEL_0/LABEL_1
+    # and the binary convention (1 == positive) is wrong here. Verified with
+    # ml/smoke_score.py: index 1 scored 0.975 on a routine systemd line and 0.015
+    # on a kernel panic — a clean inversion across all 8 probes. Index 0 is anomaly.
+    anomaly_index: 0
+    notes: >-
+      BERT-base fine-tune for log anomaly classification, ~109M params, CPU-friendly.
+      No model card and undocumented training data, so it is a smoke-test and
+      comparison point only. Phase-0 default purely because it needs zero training.
+
+  baseline-roberta:
+    repo_id: Dumi2025/log-anomaly-detection-model-roberta
+    revision: 136589867dd7cdb055d18f6d50b6ee20d69a2a80
+    license: mit
+    role: rejected
+    task: text-classification
+    notes: >-
+      RoBERTa-base log-anomaly fine-tune, ~125M params. REJECTED: the checkpoint is
+      degenerate. ml/smoke_score.py returns an identical 0.0109 for every input,
+      including a kernel panic and a routine GET — it has collapsed to a constant
+      and carries no signal. Kept in the registry so nobody re-evaluates it. Do not
+      use as a baseline; it would make any model look good by comparison.
+
+  modernbert-base:
+    repo_id: answerdotai/ModernBERT-base
+    revision: 8949b909ec900327062f0ebf497f51aef5e6f0c8
+    license: apache-2.0
+    role: finetune_base
+    task: fill-mask
+    notes: >-
+      Fine-tuning target. 8k context chosen now so the later move from per-line to
+      windowed detection needs no base-model swap.
+
+  rag-embed:
+    repo_id: nomic-ai/modernbert-embed-base
+    revision: null
+    license: apache-2.0
+    role: embedding
+    dimensions: 768
+    task: sentence-similarity
+    notes: >-
+      Resolves the RAG embedding TBD. Fixes the pgvector column at 768 dims.
+      Same family as the detector, so one tokenizer story across the stack.
+
+  gemma4-loghub:
+    repo_id: B4lt/gemma4-loghub-e2b-GGUF
+    revision: null
+    license: apache-2.0
+    role: deferred
+    task: text-generation
+    notes: >-
+      LogHub-tuned Gemma-4 E2B in GGUF, would run on the Ollama service we already
+      have. NOT adopted for detection: generation is orders of magnitude slower per
+      line than an encoder and yields no clean probability to threshold on.
+      Revisit for alert explanation, not for scoring.

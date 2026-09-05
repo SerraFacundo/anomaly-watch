@@ -1,0 +1,50 @@
+[project]
+name = "anomaly-watch"
+version = "0.1.0"
+description = "Self-hosted log anomaly detection for PyMEs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "drain3>=0.9.11",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Serving: what actually ships in the detector container. CPU only.
+detector = [
+    "torch>=2.4",
+    "transformers>=4.48",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+]
+# Dataset prep + evaluation. Runs on a dev machine, not in the stack.
+ml = [
+    "datasets>=3.2",
+    "scikit-learn>=1.5",
+    "numpy>=2.0",
+    "huggingface-hub>=0.27",
+    "httpx>=0.28",
+    "psycopg[binary]>=3.2",
+]
+# Fine-tuning. GPU box or Colab only, never installed at a PyME site.
+train = [
+    "accelerate>=1.2",
+    "peft>=0.14",
+]
+# Optional latency escape hatch (tasks 7.x). Only install if p95 misses budget.
+export = [
+    "optimum[onnxruntime]>=1.24",
+]
+
+# CPU wheels only. A PyME host has no GPU, and the CUDA wheels are ~2.5GB.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[tool.setuptools]
+packages = []

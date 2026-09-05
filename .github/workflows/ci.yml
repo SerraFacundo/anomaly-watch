@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  detector-smoke:
+    name: detector-service smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra detector --extra ml
+
+      # Keyed on models.yaml so a re-pin invalidates the cache and a stale
+      # checkpoint can never be silently tested.
+      - name: Restore model cache
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/cache
+          key: models-${{ hashFiles('ml/models.yaml') }}
+
+      - name: Fetch pinned weights
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: uv run python ml/download_models.py --model baseline-bert
+
+      - name: Start detector-service
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: |
+          uv run uvicorn services.detector.app:app --port 8003 &
+          for i in $(seq 1 60); do
+            if curl -sf localhost:8003/readyz > /dev/null; then
+              echo "ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "detector-service never became ready"; exit 1
+
+      - name: Replay the bundled sample offline
+        env:
+          HF_HUB_OFFLINE: "1"
+        # The sample ships in the repo and the weights come from the cache, so
+        # this step needs no network. --assert-anomalies makes it a real test:
+        # a model that flags nothing fails the build instead of passing quietly.
+        run: uv run python tools/replay.py data/samples/HDFS_2k.log --assert-anomalies 1
+
+      - name: Verify the model endpoint reports its pin
+        run: |
+          curl -sf localhost:8003/model | tee /dev/stderr | \
+            python -c "import json,sys; d=json.load(sys.stdin); assert d['revision'] and d['revision']!='None', 'model revision not pinned'"
