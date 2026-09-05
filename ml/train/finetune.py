@@ -100,6 +100,7 @@ def main() -> int:
 
     import torch
     from transformers import (
+        AutoConfig,
         AutoModelForSequenceClassification,
         AutoTokenizer,
         DataCollatorWithPadding,
@@ -126,7 +127,10 @@ def main() -> int:
     if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 7:
         reference_compile = False
 
-    model = AutoModelForSequenceClassification.from_pretrained(
+    # Set through config, not as a from_pretrained kwarg — some transformers
+    # versions forward unrecognized kwargs straight to the model __init__
+    # instead of the config, which crashes on reference_compile.
+    config = AutoConfig.from_pretrained(
         **load_kwargs,
         num_labels=2,
         # Written into config.json so downstream loaders never have to guess
@@ -135,6 +139,7 @@ def main() -> int:
         label2id={"Normal": 0, "Anomaly": 1},
         reference_compile=reference_compile,
     )
+    model = AutoModelForSequenceClassification.from_pretrained(**load_kwargs, config=config)
 
     if args.lora:
         from peft import LoraConfig, TaskType, get_peft_model
