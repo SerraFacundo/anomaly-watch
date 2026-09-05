@@ -117,6 +117,15 @@ def main() -> int:
         "cache_dir": str(args.cache_dir),
     }
     tokenizer = AutoTokenizer.from_pretrained(**load_kwargs)
+
+    # ModernBERT only skips torch.compile for cpu/mps, not by CUDA capability —
+    # it crashes on pre-Volta GPUs (e.g. GTX 1060, cc 6.1) where triton is
+    # installed but unsupported. Leave it unset (library default) on capable
+    # GPUs like a T4 (cc 7.5) so compile still speeds those up.
+    reference_compile = None
+    if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 7:
+        reference_compile = False
+
     model = AutoModelForSequenceClassification.from_pretrained(
         **load_kwargs,
         num_labels=2,
@@ -124,6 +133,7 @@ def main() -> int:
         # which index means anomaly — the exact trap the baseline checkpoint set.
         id2label={0: "Normal", 1: "Anomaly"},
         label2id={"Normal": 0, "Anomaly": 1},
+        reference_compile=reference_compile,
     )
 
     if args.lora:
@@ -131,7 +141,12 @@ def main() -> int:
 
         model = get_peft_model(
             model,
-            LoraConfig(task_type=TaskType.SEQ_CLS, r=16, lora_alpha=32, lora_dropout=0.05),
+            # ModernBERT has no default target-module mapping in peft, so
+            # "all-linear" is required — task_type alone isn't enough here.
+            LoraConfig(
+                task_type=TaskType.SEQ_CLS, r=16, lora_alpha=32, lora_dropout=0.05,
+                target_modules="all-linear",
+            ),
         )
         model.print_trainable_parameters()
 
