@@ -33,16 +33,34 @@
 - [x] 4.3 Implement the classical floor: Drain3 template counts + IsolationForest (or PCA residual), evaluated through the same harness
 - [x] 4.4 Write results to a versioned `ml/eval/results/*.json` recording model ID, revision, dataset manifest hash, and all metrics
 - [x] 4.5 Run the harness against: classical floor, `AungMoonLord/bert-log-anomaly-detection`, `Dumi2025/log-anomaly-detection-model-roberta`
-- [ ] 4.6 Write up the comparison table. **Decision point: if the classical floor wins, say so out loud and reconsider the transformer path before spending GPU time**
+- [x] 4.6 Write up the comparison table. **Decision point: if the classical floor wins, say so out loud and reconsider the transformer path before spending GPU time**
+
+  Comparison (full 43,419-record test split, actual anomaly rate 6.6%):
+
+  | Model | F1 | Precision | Recall | PR-AUC | Flag rate |
+  |---|---|---|---|---|---|
+  | `level-keyword` (regex floor) | 0.253 | 0.148 | 0.883 | 0.138 | 39.7% |
+  | `baseline-bert` (undocumented checkpoint) | 0.192 | 0.107 | 0.925 | 0.108 | 57.2% |
+  | `template-count` (Drain3 + IsolationForest) | 0.153 | 0.083 | 0.996 | 0.080 | 79.6% |
+
+  The classical floor wins. `baseline-bert` flags 57% of lines and its PR-AUC
+  (0.108) is barely above the base rate — almost no ranking signal.
+  `ml/promote.py --candidate baseline-bert` returns `GATE: REJECTED`.
+
+  **Decision (2026-09-05, user confirmed): proceed with the fine-tune (Phase
+  2) rather than reframe or stop.** Rationale: `baseline-bert` is an
+  undocumented, unrelated checkpoint with no model card — its failure says
+  nothing about whether a fine-tune on our own BGL split will fail the same
+  way, which was always the premise of this change.
 
 ## 5. Phase 2 — Fine-tune
 
-> **Environment note.** The machine this was implemented on has **no GPU**
-> (`torch.cuda.is_available()` is False) and **no container runtime** (neither
-> `docker` nor `podman`). Scripts below are written and exercised on CPU at
-> reduced scale to prove the code path; the real fine-tune needs a GPU box or a
-> Colab T4. Tasks that genuinely require that hardware are left unchecked rather
-> than marked done.
+> **Environment note (updated 2026-09-05).** Original implementation machine
+> had no GPU and no container runtime; those tasks were left unchecked rather
+> than faked. Continuing now on a different device: NVIDIA GTX 1060 **3GB**,
+> driver 580.173.02, CUDA 13.0, confirmed via `torch.cuda.is_available()` →
+> `True`. 3GB VRAM is tight for a full `ModernBERT-base` fine-tune — expect
+> task 5.3's LoRA fallback to trigger, not just exist as a contingency.
 
 - [ ] 5.1 Write `ml/train/finetune.py` — full fine-tune of `answerdotai/ModernBERT-base` for binary sequence classification on the labeled split
 - [ ] 5.2 Handle class imbalance (weighted loss or balanced sampling — BGL/Thunderbird anomaly rates are low); record the choice in the run metadata
