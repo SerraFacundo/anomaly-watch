@@ -8,11 +8,13 @@
 #   baseline  — off-the-shelf checkpoints, used for phase-0 smoke and as eval
 #               comparison points. Never the shipped default.
 #   finetune_base — what ml/train/finetune.py starts from.
+#   finetune  — output of ml/train/finetune.py, evaluated through the harness
+#               and promoted via ml/promote.py once it beats the incumbent.
 #   embedding — RAG retrieval embeddings (ARCHITECTURE.md 4.1 / 8.2).
 #   deferred  — researched, deliberately not adopted. Kept so the decision is
 #               visible instead of being rediscovered later.
 
-default: baseline-bert
+default: modernbert-ft
 
 models:
   baseline-bert:
@@ -43,6 +45,26 @@ models:
       including a kernel panic and a routine GET — it has collapsed to a constant
       and carries no signal. Kept in the registry so nobody re-evaluates it. Do not
       use as a baseline; it would make any model look good by comparison.
+
+  modernbert-ft:
+    # Local checkpoint, not a Hub repo — from_pretrained loads it as a plain
+    # directory (revision/cache_dir are ignored for local paths). Resolves
+    # from the repo root, so it only works for `uv run` invocations there —
+    # not yet moved into models/cache, so it will NOT resolve inside the
+    # Docker Compose detector container until it is (task 6.6 is still
+    # blocked on this machine having no docker/podman to verify against).
+    repo_id: ml/train/runs/modernbert-ft
+    revision: local
+    license: apache-2.0
+    role: finetune
+    task: text-classification
+    notes: >-
+      Our fine-tune of modernbert-base on the BGL split. F1 0.930, PR-AUC 0.898
+      on the fixed test split (ml/eval/results/modernbert-ft.json) — beats
+      baseline-bert (F1 0.192) by a wide margin and clears the promotion gate.
+      Trained on a Colab T4; the local GPU (GTX 1060 3GB) is too small for a
+      full fine-tune. id2label is set explicitly during training, so the
+      anomaly index resolves automatically — no anomaly_index override needed.
 
   modernbert-base:
     repo_id: answerdotai/ModernBERT-base

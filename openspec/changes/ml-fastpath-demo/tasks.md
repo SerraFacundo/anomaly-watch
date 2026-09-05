@@ -64,11 +64,11 @@
 
 - [x] 5.1 Write `ml/train/finetune.py` — full fine-tune of `answerdotai/ModernBERT-base` for binary sequence classification on the labeled split
 - [x] 5.2 Handle class imbalance (weighted loss or balanced sampling — BGL/Thunderbird anomaly rates are low); record the choice in the run metadata
-- [ ] 5.3 Confirm the run fits a single consumer GPU / free-tier T4; if VRAM binds, fall back to LoRA via `peft` and note the switch — code supports `--lora`, needs an actual run on the GTX 1060 3GB to confirm which path fits
-- [x] 5.4 Emit checkpoint plus run metadata: base model ID + revision, hyperparameters, dataset manifest hash, train/val curves — implemented, unverified until 5.3's run produces one
-- [ ] 5.5 Evaluate the fine-tuned checkpoint through the same harness and add it to the comparison table — `ml/eval/harness.py --checkpoint` already supports this, needs a real checkpoint to run against
-- [ ] 5.6 Apply the promotion gate: higher F1 than the incumbent with p95 latency inside budget. Promote by config only, or explicitly record why it was not promoted — `ml/promote.py --candidate` already implements this, needs a real eval result to gate on
-- [ ] 5.7 Publish or archive the winning checkpoint into the model cache and pin it in `ml/models.yaml` — `ml/promote.py --apply` already does the pin, blocked on 5.6
+- [x] 5.3 Confirm the run fits a single consumer GPU / free-tier T4; if VRAM binds, fall back to LoRA via `peft` and note the switch — confirmed both ways: the GTX 1060 3GB OOM'd on a full fine-tune (shared with the desktop session, ~48MB free at OOM time) and needed `--lora`; a Colab T4 (16GB) fit the full fine-tune with room to spare
+- [x] 5.4 Emit checkpoint plus run metadata: base model ID + revision, hyperparameters, dataset manifest hash, train/val curves — done, `ml/train/runs/modernbert-ft/run_metadata.json`
+- [x] 5.5 Evaluate the fine-tuned checkpoint through the same harness and add it to the comparison table — **F1 0.930, precision 1.000, recall 0.870, PR-AUC 0.898, p95 batch-32 388.9ms, 602MB** on the full 43,419-record test split (`ml/eval/results/modernbert-ft.json`). Far above the classical floor (0.253) and `baseline-bert` (0.192) — the earlier near-1.0 validation-split number (§4.6) was BGL's low anomaly-template diversity (477 unique templates cover 97% of train anomalies), not leakage; the true held-out test number is 0.930, still a decisive win
+- [x] 5.6 Apply the promotion gate: higher F1 than the incumbent with p95 latency inside budget. Promote by config only, or explicitly record why it was not promoted — `ml/promote.py --candidate modernbert-ft`: **GATE: PASSED** (beats `baseline-bert` on F1 and is faster: 389ms vs 694ms p95)
+- [x] 5.7 Publish or archive the winning checkpoint into the model cache and pin it in `ml/models.yaml` — `default: modernbert-ft` applied; pin added by hand since `promote.py --apply` only flips `default:`, it doesn't create the `models:` entry (real gap in the script, not a wontfix — worth a follow-up). Checkpoint still lives at `ml/train/runs/modernbert-ft/` (gitignored), **not yet moved into `models/cache/`** — works for local `uv run` use, will NOT resolve inside the Docker Compose detector container until moved (blocks part of 6.6)
 
 ## 6. Phase 3 — Pipeline integration
 
