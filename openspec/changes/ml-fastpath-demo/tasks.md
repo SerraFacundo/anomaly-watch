@@ -28,11 +28,11 @@
 
 ## 4. Phase 1 — Evaluation harness
 
-- [ ] 4.1 Write `ml/eval/harness.py` — take a model ID + revision (or a local checkpoint path), score the fixed test split, compute precision, recall, F1, PR-AUC
-- [ ] 4.2 Measure p95 single-record latency and p95 batch-of-32 latency on CPU; record on-disk model size
-- [ ] 4.3 Implement the classical floor: Drain3 template counts + IsolationForest (or PCA residual), evaluated through the same harness
-- [ ] 4.4 Write results to a versioned `ml/eval/results/*.json` recording model ID, revision, dataset manifest hash, and all metrics
-- [ ] 4.5 Run the harness against: classical floor, `AungMoonLord/bert-log-anomaly-detection`, `Dumi2025/log-anomaly-detection-model-roberta`
+- [x] 4.1 Write `ml/eval/harness.py` — take a model ID + revision (or a local checkpoint path), score the fixed test split, compute precision, recall, F1, PR-AUC
+- [x] 4.2 Measure p95 single-record latency and p95 batch-of-32 latency on CPU; record on-disk model size
+- [x] 4.3 Implement the classical floor: Drain3 template counts + IsolationForest (or PCA residual), evaluated through the same harness
+- [x] 4.4 Write results to a versioned `ml/eval/results/*.json` recording model ID, revision, dataset manifest hash, and all metrics
+- [x] 4.5 Run the harness against: classical floor, `AungMoonLord/bert-log-anomaly-detection`, `Dumi2025/log-anomaly-detection-model-roberta`
 - [ ] 4.6 Write up the comparison table. **Decision point: if the classical floor wins, say so out loud and reconsider the transformer path before spending GPU time**
 
 ## 5. Phase 2 — Fine-tune

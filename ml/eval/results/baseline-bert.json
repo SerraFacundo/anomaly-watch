@@ -1,0 +1,45 @@
+{
+  "dataset": {
+    "evaluated_records": 43419,
+    "full_split": true,
+    "limit": null,
+    "manifest_sha256": "61850cb40f50bbf9f1fde88425fe6e1107ef830e3024a39f45dcdc3f7902844d",
+    "repo": "bolu61/loghub_2",
+    "revision": "4a98d3eb30522891b340609d17fa34709a1d44d2",
+    "test_sha256": "3d0b5d8f2398bc2ed4ffa58f65691cf9f68f2b5930ab32443d8afe523678b718"
+  },
+  "environment": {
+    "platform": "Linux-7.1.6-201.fc44.x86_64-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.12.3"
+  },
+  "evaluated_at": "2026-09-05T17:59:24.505874+00:00",
+  "kind": "transformer",
+  "latency": {
+    "p50_batch32_ms": 680.678,
+    "p50_single_ms": 88.581,
+    "p95_batch32_ms": 694.302,
+    "p95_single_ms": 91.289,
+    "rounds": 30
+  },
+  "metrics": {
+    "actual_anomaly_rate": 0.0664,
+    "f1": 0.1923,
+    "pr_auc": 0.1076,
+    "precision": 0.1073,
+    "predicted_anomaly_rate": 0.572,
+    "recall": 0.9247,
+    "roc_auc": 0.6119,
+    "threshold": 0.5
+  },
+  "model": {
+    "anomaly_index": 0,
+    "anomaly_index_reason": "explicit override index=0",
+    "license": "apache-2.0",
+    "repo_id": "AungMoonLord/bert-log-anomaly-detection",
+    "revision": "9ece304f330c8fa08a9ba825fd3d1adcf746aaf6"
+  },
+  "model_size_mb": 438.9,
+  "name": "baseline-bert",
+  "throughput_records_per_s": 29.7
+}
