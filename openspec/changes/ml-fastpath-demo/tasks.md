@@ -62,20 +62,20 @@
 > `True`. 3GB VRAM is tight for a full `ModernBERT-base` fine-tune — expect
 > task 5.3's LoRA fallback to trigger, not just exist as a contingency.
 
-- [ ] 5.1 Write `ml/train/finetune.py` — full fine-tune of `answerdotai/ModernBERT-base` for binary sequence classification on the labeled split
-- [ ] 5.2 Handle class imbalance (weighted loss or balanced sampling — BGL/Thunderbird anomaly rates are low); record the choice in the run metadata
-- [ ] 5.3 Confirm the run fits a single consumer GPU / free-tier T4; if VRAM binds, fall back to LoRA via `peft` and note the switch
-- [ ] 5.4 Emit checkpoint plus run metadata: base model ID + revision, hyperparameters, dataset manifest hash, train/val curves
-- [ ] 5.5 Evaluate the fine-tuned checkpoint through the same harness and add it to the comparison table
-- [ ] 5.6 Apply the promotion gate: higher F1 than the incumbent with p95 latency inside budget. Promote by config only, or explicitly record why it was not promoted
-- [ ] 5.7 Publish or archive the winning checkpoint into the model cache and pin it in `ml/models.yaml`
+- [x] 5.1 Write `ml/train/finetune.py` — full fine-tune of `answerdotai/ModernBERT-base` for binary sequence classification on the labeled split
+- [x] 5.2 Handle class imbalance (weighted loss or balanced sampling — BGL/Thunderbird anomaly rates are low); record the choice in the run metadata
+- [ ] 5.3 Confirm the run fits a single consumer GPU / free-tier T4; if VRAM binds, fall back to LoRA via `peft` and note the switch — code supports `--lora`, needs an actual run on the GTX 1060 3GB to confirm which path fits
+- [x] 5.4 Emit checkpoint plus run metadata: base model ID + revision, hyperparameters, dataset manifest hash, train/val curves — implemented, unverified until 5.3's run produces one
+- [ ] 5.5 Evaluate the fine-tuned checkpoint through the same harness and add it to the comparison table — `ml/eval/harness.py --checkpoint` already supports this, needs a real checkpoint to run against
+- [ ] 5.6 Apply the promotion gate: higher F1 than the incumbent with p95 latency inside budget. Promote by config only, or explicitly record why it was not promoted — `ml/promote.py --candidate` already implements this, needs a real eval result to gate on
+- [ ] 5.7 Publish or archive the winning checkpoint into the model cache and pin it in `ml/models.yaml` — `ml/promote.py --apply` already does the pin, blocked on 5.6
 
 ## 6. Phase 3 — Pipeline integration
 
 - [x] 6.1 Implement the Drain3 parsing step producing the detector input record (raw message + `template_id` + template + params + host + timestamp)
-- [ ] 6.2 Write the replay harness CLI: log file → Drain3 parse → batched `POST /score` → scored output, reporting throughput and observed latency
-- [ ] 6.3 Bundle a small sample log file and wire the harness as a CI smoke test that runs with no network access
-- [ ] 6.4 Persist scored anomalies to Postgres (`anomalies` table per `ARCHITECTURE.md` §8.1), storing raw score, threshold, model ID and revision alongside each row
+- [x] 6.2 Write the replay harness CLI: log file → Drain3 parse → batched `POST /score` → scored output, reporting throughput and observed latency
+- [x] 6.3 Bundle a small sample log file and wire the harness as a CI smoke test that runs with no network access — `.github/workflows/ci.yml` runs `tools/replay.py --assert-anomalies 1` offline against `data/samples/HDFS_2k.log`
+- [x] 6.4 Persist scored anomalies to Postgres (`anomalies` table per `ARCHITECTURE.md` §8.1), storing raw score, threshold, model ID and revision alongside each row
 - [x] 6.5 Add `detector-service` to `docker-compose.yml` — internal-only on the shared network, port 8003, model cache mounted as a volume, `HF_HUB_OFFLINE=1`
 - [ ] 6.6 Verify the full demo path inside Compose: file in, scored anomalies in Postgres
 
