@@ -4,7 +4,7 @@
 
 **Deployment model:** A single Docker Compose stack runs on the PyME's central server. FluentBit agents installed on each PyME machine forward logs to the central stack via Kafka.
 
-**Date of last update:** 2026-06-07
+**Date of last update:** 2026-08-24
 
 ---
 
@@ -20,12 +20,13 @@
   - [3.1 Pipeline Flow Diagram](#31-pipeline-flow-diagram)
   - [3.2 Kafka Topic Structure](#32-kafka-topic-structure)
   - [3.3 Drain3 Template Extraction](#33-drain3-template-extraction)
-  - [3.4 LogBERT Anomaly Detection](#34-logbert-anomaly-detection)
+  - [3.4 Anomaly Detection Model](#34-anomaly-detection-model)
+  - [3.5 Model Lifecycle](#35-model-lifecycle)
 - [4. RAG Response Engine](#4-rag-response-engine)
   - [4.1 RAG Pipeline Flow](#41-rag-pipeline-flow)
   - [4.2 MITRE ATT&CK Knowledge Base Ingestion](#42-mitre-attck-knowledge-base-ingestion)
   - [4.3 Enriched Alert Structure](#43-enriched-alert-structure)
-  - [4.4 LLM Model](#44-llm-model)
+  - [4.4 LLM and Embedding Models](#44-llm-and-embedding-models)
 - [5. Real-Time Alerts & Notifications](#5-real-time-alerts--notifications)
   - [5.1 SSE Real-Time Updates](#51-sse-real-time-updates)
   - [5.2 Notification Channels](#52-notification-channels)
@@ -139,8 +140,13 @@ graph TB
 
 | Service | Technology | Responsibility | Default Port |
 |---------|-----------|---------------|-------------|
-| **log-ingestor** | Python / Drain3 | Consumes raw logs from Kafka, extracts parameterized log templates using Drain3 algorithm, publishes templates to Kafka | — (consumer) |
-| **anomaly-detector** | Python / LogBERT | Consumes log templates from Kafka, runs LogBERT inference to score template sequences, flags anomalies above threshold, triggers alerts | — (consumer) |
+| **log-ingestor** | Python / Drain3 | Consumes raw logs from Kafka, extracts parameterized log templates using Drain3 algorithm, publishes records to Kafka | — (consumer) |
+| **anomaly-detector** | Python | Consumes parsed records from Kafka and calls `detector-service` to score them. Holds no model of its own — it owns threshold policy, deduplication and alert triggering | — (consumer) |
+| **detector-service** | Python / FastAPI + transformers | Serves the anomaly model over HTTP (`POST /score`). CPU inference. The one component that loads model weights | 8003 (internal) |
+
+> **Demo-phase note.** `anomaly-detector` does not exist yet. During the demo
+> phase its role is played by `tools/replay.py`, which reads a log file, parses
+> it with Drain3, and calls `detector-service` directly — no Kafka. See §3.1.
 
 ### 2.3 Application Services
 
@@ -163,12 +169,31 @@ graph TB
 
 ### 3.1 Pipeline Flow Diagram
 
+**Demo path (implemented today).** No broker. This exists so the model layer can
+be measured before the streaming design is committed to — the batch size and
+latency numbers it produces are the inputs that should size the Kafka topology,
+not the other way around.
+
+```mermaid
+flowchart LR
+    FILE["Log file on disk"] -->|read| RP["tools/replay.py"]
+    RP -->|Drain3 parse| REC["Record: raw message + template_id + params + host + ts"]
+    REC -->|"POST /score (batched)"| DS["detector-service (CPU transformer)"]
+    DS -->|scores| RP
+    RP -->|flagged anomalies| PG["Postgres (anomalies table)"]
+```
+
+**Target topology (deferred).** Unchanged in intent from the original design;
+the detection box is now a call to `detector-service` rather than an embedded
+model. Deferred to its own change — see §9.
+
 ```mermaid
 flowchart LR
     FB["FluentBit (PyME machines)"] -->|raw logs| K1["Kafka: raw-logs"]
     K1 -->|consume| LI["log-ingestor (Drain3)"]
-    LI -->|log templates| K2["Kafka: log-templates"]
-    K2 -->|consume| AD["anomaly-detector (LogBERT)"]
+    LI -->|parsed records| K2["Kafka: log-templates"]
+    K2 -->|consume| AD["anomaly-detector"]
+    AD -->|"POST /score"| DS2["detector-service"]
     AD -->|anomaly scores| PG["Postgres (anomalies table)"]
     AD -->|alert trigger| API["api service"]
     API -->|enrichment request| RAG["rag-engine"]
@@ -199,23 +224,90 @@ The **log-ingestor** service uses the [Drain3](https://github.com/logpai/Drain3)
 | **Extracted template** | `User <*> logged in from <*>` |
 | **Parameters** | `["admin", "192.168.1.50"]` |
 
-The template extraction enables LogBERT to work with normalized log sequences rather than high-cardinality raw text, dramatically reducing the vocabulary space and improving anomaly detection accuracy.
+Template extraction gives every record a stable identity for grouping,
+deduplication and RAG context.
 
-### 3.4 LogBERT Anomaly Detection
+**What gets scored is the raw message, not the template ID.** The detection model
+is a pretrained language model; feeding it opaque cluster IDs would discard the
+pretraining that makes it useful without training. Drain3 metadata travels
+alongside the message, it does not replace it.
 
-The **anomaly-detector** service uses [LogBERT](https://arxiv.org/abs/2103.04475), a BERT-based model adapted for log anomaly detection.
+### 3.4 Anomaly Detection Model
 
-**Training flow:**
-- Training infrastructure: **TBD** (local GPU / cloud GPU / pre-trained weights)
-- Input: historical log template sequences (normal behavior baseline)
-- Output: trained model weights for inference
+The **detector-service** runs a fine-tuned open-weight transformer classifier.
 
-**Inference flow (real-time):**
-1. Consume log template sequences from `log-templates` Kafka topic
-2. Encode template sequences using LogBERT tokenizer
-3. Run inference on **CPU** (no GPU required for inference)
-4. Compute anomaly score for each sequence
-5. If score exceeds configurable threshold → flag as anomaly → trigger alert pipeline
+> **LogBERT was dropped.** The original design called for training
+> [LogBERT](https://arxiv.org/abs/2103.04475) in-house. That is a research
+> project — labeled corpus, training pipeline, GPU budget — and it blocked every
+> downstream component behind a model that did not exist. Fine-tuning an existing
+> open-weight encoder reaches a usable signal in hours on public data. LogBERT
+> remains valid prior art and could return later as one implementation behind the
+> `/score` contract; it is not the mechanism.
+
+**Model contract**
+
+| Aspect | Value |
+|---|---|
+| Framing | Per-line binary classification: raw message → anomaly probability in `[0,1]` |
+| Baseline (phase 0) | [`AungMoonLord/bert-log-anomaly-detection`](https://hf.co/AungMoonLord/bert-log-anomaly-detection), apache-2.0, zero training |
+| Fine-tune base | [`answerdotai/ModernBERT-base`](https://hf.co/answerdotai/ModernBERT-base), apache-2.0, 8k context |
+| Training corpus | LogHub 2.0 BGL, per-line alert labels ([`bolu61/loghub_2`](https://hf.co/datasets/bolu61/loghub_2)) |
+| Inference | CPU only, batched. No GPU at the PyME site |
+| Threshold | Configuration (`DETECTOR_THRESHOLD`), not a constant. Raw score always returned so consumers can re-threshold without re-scoring |
+| Active pin | `ml/models.yaml` — repo ID **and** exact revision SHA |
+
+**Two traps this design guards against**, both found empirically and both cheap
+to fall into again:
+
+1. **Label-index inversion.** The phase-0 baseline checkpoint ships no
+   `id2label`. Assuming the usual "index 1 = positive" convention inverts every
+   score it produces — verified: it scored 0.975 on a routine `systemd` line and
+   0.015 on a kernel panic. The correct index is recorded per-model in
+   `ml/models.yaml` and reported by `GET /model`. Our own fine-tunes write
+   `id2label` into `config.json` so the ambiguity cannot recur.
+
+2. **Label leakage from the severity field.** BGL lines carry a `Level` field
+   that is very nearly the label itself (`FATAL` → ~94% anomaly, `INFO` → 100%
+   normal). Training or evaluating on text containing it yields a near-perfect
+   score that reflects reading one word. Only the `Content` field is scored;
+   `Level` is metadata. A `level-keyword` baseline is evaluated on every run so
+   the shortcut stays visible if it ever creeps back in.
+
+**Inference flow:**
+1. Receive a batch of parsed records (raw message + Drain3 metadata)
+2. Tokenize the raw messages
+3. Run CPU inference, take the anomaly-class probability
+4. Compare against the configured threshold → flag → trigger the alert pipeline
+5. Persist score, threshold, model key and model revision with each anomaly, so a
+   stored anomaly stays interpretable after a model swap
+
+### 3.5 Model Lifecycle
+
+Models are pinned, evaluated and promoted through a fixed sequence. The point is
+that swapping a model costs one config value and a benchmark run.
+
+| Stage | Tool | Output |
+|---|---|---|
+| Pin & fetch | `ml/download_models.py` | Weights in a local cache; exact revision SHA written to `ml/models.yaml` |
+| Dataset | `ml/data/prepare.py` | Chronologically split, labeled JSONL + a manifest hash |
+| Evaluate | `ml/eval/harness.py` | Precision / recall / F1 / PR-AUC / p95 latency / model size, per candidate |
+| Fine-tune | `ml/train/finetune.py` | Checkpoint + full run metadata |
+| Promote | `ml/promote.py` | Gate decision; on pass, updates `default:` in `ml/models.yaml` |
+
+**Rules that hold regardless of which model is active:**
+
+- Revisions are commit SHAs, never branch names — a moved branch means the model
+  you evaluated is not the model you deployed.
+- The deployed stack runs `HF_HUB_OFFLINE=1`. No runtime downloads, so log data
+  cannot egress and the served weights are exactly the evaluated weights.
+- Only permissively licensed weights (apache-2.0 / MIT) — the stack is
+  redistributed to self-hosting customers.
+- **Promotion gate:** a candidate must beat the incumbent *and* both floor
+  baselines on F1, on the same dataset manifest, without exceeding the p95
+  batch-32 latency budget. Comparing numbers from different data is refused
+  automatically.
+- Splits are chronological. A random split lets a burst's start land in train and
+  its tail in test, which inflates every metric.
 
 ---
 
@@ -267,11 +359,27 @@ Each enriched alert produced by the RAG pipeline contains:
 | `confidence_score` | Anomaly detection confidence (from LogBERT) |
 | `source_logs` | Reference to original log template sequence that triggered detection |
 
-### 4.4 LLM Model
+### 4.4 LLM and Embedding Models
 
-- **Runtime:** Ollama (local, self-hosted, runs as Docker Compose service)
-- **Model:** **TBD** — candidates include Mistral 7B, Llama 3, or other models compatible with Ollama
-- **Selection criteria:** must run on consumer-grade hardware (CPU inference acceptable), support instruction-following, and produce coherent security analysis
+**Embedding model (decided):** [`nomic-ai/modernbert-embed-base`](https://hf.co/nomic-ai/modernbert-embed-base)
+
+- apache-2.0, **768 dimensions** — this fixes the `pgvector` column width (§8.2)
+- Same ModernBERT family as the detector, so one architecture and one tokenizer
+  story across the stack
+- Pinned in `ml/models.yaml` under the `rag-embed` key, same rules as every other
+  model
+
+**Generation model:** still **TBD** — candidates include Mistral 7B and Llama 3.
+Selection criteria unchanged: runs on consumer hardware, follows instructions,
+produces coherent security analysis.
+
+One candidate worth noting:
+[`B4lt/gemma4-loghub-e2b-GGUF`](https://hf.co/B4lt/gemma4-loghub-e2b-GGUF) is a
+Gemma-4 E2B fine-tuned on LogHub, distributed as GGUF, so it runs on the Ollama
+service the stack already has. It was evaluated for *detection* and rejected —
+generation is orders of magnitude slower per line than an encoder and yields no
+clean probability to threshold on. For *explanation*, which is what this section
+is about, those objections do not apply and it remains a live option.
 
 ---
 
@@ -364,13 +472,27 @@ All services (except FluentBit agents) run in a single Docker Compose stack on t
 | **postgres** | postgres + pgvector | 5432 (internal) | pgvector extension pre-installed |
 | **ollama** | ollama/ollama | 11434 (internal) | LLM model runtime |
 | **log-ingestor** | custom (Python) | — | Kafka consumer, no HTTP port |
-| **anomaly-detector** | custom (Python) | — | Kafka consumer, no HTTP port |
+| **anomaly-detector** | custom (Python) | — | Kafka consumer, calls detector-service |
+| **detector-service** | custom (Python/FastAPI) | 8003 (internal) | CPU inference. Model cache mounted read-only as a volume; `HF_HUB_OFFLINE=1` |
 | **api** | custom (Python/FastAPI) | 8000 (internal) | Behind Nginx |
 | **rag-engine** | custom (Python) | 8001 (internal) | Called by API |
 | **notifier** | custom (Python) | 8002 (internal) | Called by API |
 | **web-app** | custom (React, static build) | — | Served by Nginx |
 
 All custom services share a common Docker network. Only Nginx ports are exposed to the host.
+
+**Currently implemented.** `docker-compose.yml` in the repo contains the demo
+slice only — `postgres` and `detector`. The rest of this table is the target
+state; those services have no implementation yet and shipping empty containers
+would misrepresent what works. Model weights are **not** baked into the detector
+image: they are mounted from `./models/cache`, so the image stays small and a
+model swap never requires a rebuild.
+
+Populate the cache before first run:
+
+```bash
+uv run python ml/download_models.py
+```
 
 ### 7.2 FluentBit Agent Deployment
 
@@ -403,10 +525,26 @@ Postgres is the sole relational data store. Schema is organized into logical are
 | Schema Area | Key Tables | Purpose |
 |-------------|-----------|---------|
 | **Templates** | `log_templates`, `template_clusters` | Drain3-extracted log templates and their cluster metadata |
-| **Anomalies** | `anomalies`, `anomaly_scores` | Detected anomalies with LogBERT scores and source template sequences |
+| **Anomalies** | `anomalies`, `anomaly_scores` | Detected anomalies with model scores and source records |
 | **Alerts** | `alerts`, `alert_enrichments` | Alert records with RAG-enriched explanations, ATT&CK mappings, contingency actions |
 | **Users & Roles** | `users`, `roles`, `user_roles` | User accounts, RBAC role definitions, and role assignments |
 | **Configuration** | `system_config`, `notification_config` | System-wide and per-channel notification configuration |
+
+**The `anomalies` table records which model produced each score:**
+
+| Column | Purpose |
+|---|---|
+| `message` | The raw log line that was scored |
+| `template_id`, `template` | Drain3 identity, for grouping and RAG context |
+| `host`, `log_timestamp` | Source machine and the timestamp as originally written |
+| `score` | Raw model output in `[0,1]`, stored unthresholded |
+| `threshold` | The threshold in force when the row was written |
+| `model_key`, `model_revision` | Which model, at which exact revision |
+
+Storing `model_key` / `model_revision` / `threshold` alongside the score is what
+keeps historical anomalies interpretable across a model swap. A bare score from
+an unknown model is not evidence of anything, and re-thresholding old data
+without re-scoring it is only possible because the raw score is kept.
 
 ### 8.2 pgvector for ATT&CK Embeddings
 
@@ -414,7 +552,7 @@ Postgres is the sole relational data store. Schema is organized into logical are
 - **Table:** `attack_embeddings` stores MITRE ATT&CK technique/tactic chunks as vector embeddings
 - **Index:** IVFFlat or HNSW index for approximate nearest neighbor search
 - **Query:** rag-engine performs `ORDER BY embedding <=> query_vector LIMIT k` for top-k retrieval
-- **Dimensionality:** depends on embedding model (e.g., 384 for all-MiniLM-L6-v2, 768 for larger models)
+- **Dimensionality:** **768** — fixed by the choice of `nomic-ai/modernbert-embed-base` (§4.4). Column type is `vector(768)`
 
 ### 8.3 Log Retention Policy
 
@@ -428,15 +566,25 @@ Postgres is the sole relational data store. Schema is organized into logical are
 
 ## 9. TBD Items
 
+### Resolved
+
+| Item | Resolution |
+|------|-----------|
+| **LogBERT training infrastructure** | **Closed — no longer applicable.** LogBERT was dropped (§3.4). Fine-tuning targets a single consumer GPU or a free-tier T4; inference is CPU-only, so PyMEs never need GPU hardware |
+| **Embedding model for RAG** | **Closed.** `nomic-ai/modernbert-embed-base`, 768 dims, apache-2.0 (§4.4). Fixes the pgvector column at `vector(768)` |
+
+### Open
+
 | Item | Context | Impact |
 |------|---------|--------|
 | **Mobile app framework** | React Native, Flutter, or PWA+Capacitor | Determines mobile dev stack and code sharing with web-app |
-| **LogBERT training infrastructure** | Local GPU, cloud GPU, or use pre-trained weights | Determines whether PyMEs need GPU hardware or if training is centralized |
-| **LLM model for RAG** | Mistral 7B, Llama 3, or other Ollama-compatible model | Affects hardware requirements (RAM/VRAM) and response quality |
+| **LLM model for RAG generation** | Mistral 7B, Llama 3, or `B4lt/gemma4-loghub-e2b-GGUF` | Affects hardware requirements (RAM/VRAM) and response quality |
 | **Additional notification channels** | SMS, push notifications, chat integrations | Extends notifier service beyond email/webhook |
-| **Embedding model for RAG** | all-MiniLM-L6-v2, other sentence transformers | Affects vector dimensionality and retrieval quality |
-| **Anomaly detection threshold** | Static vs. adaptive threshold | Affects false positive/negative rates |
-| **Log sources and formats** | Syslog, JSON, custom formats per PyME | Determines FluentBit parser configuration |
+| **Anomaly detection threshold** | Now a configured value (`DETECTOR_THRESHOLD`, default 0.5) rather than an unknown. What remains open is the *right* value: it has never been validated against real PyME logs, and no false-positive budget has been agreed for a customer with no dedicated SOC | Sets the false positive/negative trade-off |
+| **Log sources and formats** | Syslog, JSON, Windows Event Log, custom per PyME | Determines FluentBit parser configuration — and whether a domain fine-tune is needed, since the current model is trained on HPC logs |
+| **Streaming topology** | Kafka wiring deferred until the detector's real batch size and latency are known | Deferred on purpose: those measurements are the inputs to the design |
+| **Windowed detection** | Per-line today. Session/window-level is strictly better for real detection quality | ModernBERT's 8k context was chosen so this needs no base-model change |
+| **Domain transfer** | Model is trained on BGL (HPC supercomputer logs); PyMEs run nginx, sshd, systemd, Windows | The largest known quality risk. Needs a fine-tune on pilot data |
 
 ---
 
@@ -445,7 +593,11 @@ Postgres is the sole relational data store. Schema is organized into logical are
 | Term | Definition |
 |------|-----------|
 | **Drain3** | An online log parsing algorithm that extracts parameterized log templates from raw log messages using a fixed-depth tree. Enables structured analysis of unstructured logs |
-| **LogBERT** | A BERT-based deep learning model adapted for log anomaly detection. Learns normal log sequence patterns and flags deviations as anomalies |
+| **LogBERT** | A BERT-based model adapted for log anomaly detection via masked-log modeling. **Prior art, not used here.** Training it in-house was the original plan and was dropped: it is a research effort that blocked every downstream component behind a model that did not exist. See §3.4 |
+| **ModernBERT** | A 2024 encoder architecture (apache-2.0) with an 8k context window and faster inference than BERT at comparable size. The fine-tuning base for the detector |
+| **LogHub** | A public collection of labeled system log datasets (BGL, HDFS, Thunderbird, and others) used across the log-analysis literature. Source of the training and evaluation data |
+| **Promotion gate** | The rule a candidate model must clear to become the configured default: beat the incumbent and both floor baselines on F1, on the same dataset manifest, within the p95 latency budget. Enforced by `ml/promote.py` |
+| **Label leakage** | When a feature in the input effectively encodes the answer — e.g. a log's severity field being nearly identical to its anomaly label. Produces impressive metrics that mean nothing. See §3.4 |
 | **MITRE ATT&CK** | A globally-accessible knowledge base of adversary tactics, techniques, and procedures (TTPs) based on real-world observations. Used here to map detected anomalies to known attack patterns |
 | **SSE (Server-Sent Events)** | A server push technology enabling a server to send real-time updates to a client over a single HTTP connection. Used for dashboard live updates |
 | **pgvector** | A PostgreSQL extension that adds support for vector similarity search. Used to store and query MITRE ATT&CK embeddings for RAG retrieval |

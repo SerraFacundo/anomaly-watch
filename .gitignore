@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Anomaly Watch — ML artifacts
+# Test fixtures are tracked despite the blanket *.log rule above: CI replays this
+# sample offline, so it has to live in the repo.
+!data/samples/*.log
+# Model weights are pulled into a cache and mounted as a volume, never committed.
+models/cache/
+ml/data/build/
+ml/train/runs/
+ml/export/onnx/

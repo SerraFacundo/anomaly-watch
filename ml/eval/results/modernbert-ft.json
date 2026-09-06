@@ -1,0 +1,45 @@
+{
+  "dataset": {
+    "evaluated_records": 43419,
+    "full_split": true,
+    "limit": null,
+    "manifest_sha256": "61850cb40f50bbf9f1fde88425fe6e1107ef830e3024a39f45dcdc3f7902844d",
+    "repo": "bolu61/loghub_2",
+    "revision": "4a98d3eb30522891b340609d17fa34709a1d44d2",
+    "test_sha256": "3d0b5d8f2398bc2ed4ffa58f65691cf9f68f2b5930ab32443d8afe523678b718"
+  },
+  "environment": {
+    "platform": "Linux-6.18.48-ogc1.1.fc44.x86_64-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.12.14"
+  },
+  "evaluated_at": "2026-09-05T22:41:36.227118+00:00",
+  "kind": "transformer",
+  "latency": {
+    "p50_batch32_ms": 339.568,
+    "p50_single_ms": 52.638,
+    "p95_batch32_ms": 388.926,
+    "p95_single_ms": 60.805,
+    "rounds": 30
+  },
+  "metrics": {
+    "actual_anomaly_rate": 0.0664,
+    "f1": 0.9304,
+    "pr_auc": 0.8978,
+    "precision": 1.0,
+    "predicted_anomaly_rate": 0.0577,
+    "recall": 0.8699,
+    "roc_auc": 0.9263,
+    "threshold": 0.5
+  },
+  "model": {
+    "anomaly_index": 1,
+    "anomaly_index_reason": "matched label 'Anomaly'",
+    "license": "internal",
+    "repo_id": "ml/train/runs/modernbert-ft",
+    "revision": "local"
+  },
+  "model_size_mb": 602.1,
+  "name": "modernbert-ft",
+  "throughput_records_per_s": 29.6
+}
