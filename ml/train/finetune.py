@@ -193,6 +193,9 @@ def main() -> int:
             return (loss, outputs) if return_outputs else loss
 
     args.out.mkdir(parents=True, exist_ok=True)
+    bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    if torch.cuda.is_available():
+        print(f"precision  : {'bf16' if bf16_ok else 'fp16'} on {torch.cuda.get_device_name(0)}")
     training_arguments = TrainingArguments(
         output_dir=str(args.out / "checkpoints"),
         num_train_epochs=args.epochs,
@@ -209,7 +212,13 @@ def main() -> int:
         greater_is_better=True,
         logging_steps=50,
         save_total_limit=2,
-        bf16=torch.cuda.is_available(),
+        # bf16 needs Ampere (cc 8.0+). A T4 is Turing: asking for bf16 there
+        # gets no mixed precision at all — torch warns "does not support
+        # bfloat16 compilation natively, skipping" and falls back to fp32,
+        # roughly halving throughput on the exact GPU a free Colab session
+        # gives you. fp16 is what Turing has tensor cores for.
+        bf16=bf16_ok,
+        fp16=torch.cuda.is_available() and not bf16_ok,
         report_to=[],
     )
 
