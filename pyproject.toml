@@ -13,7 +13,11 @@ dependencies = [
 # Serving: what actually ships in the detector container. CPU only.
 detector = [
     "torch>=2.4",
-    "transformers>=4.48",
+    # Upper bound is load-bearing, not caution. transformers 5.x reworked
+    # TrainingArguments and removed `warmup_ratio`, so an unbounded spec breaks
+    # ml/train/finetune.py on any fresh install — which is exactly what happened
+    # on a Colab runtime. 4.57.6 is the line that produced the shipped checkpoint.
+    "transformers>=4.48,<5",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
