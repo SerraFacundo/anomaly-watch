@@ -84,8 +84,18 @@ class LogScorer:
             torch.set_num_threads(num_threads)
 
         revision = pin.require_revision()
+
+        # A locally-trained checkpoint lives in the cache directory alongside the
+        # Hub downloads, and is named by directory rather than by `org/name`.
+        # Resolving it against `cache_dir` is what lets one registry entry work
+        # both from a `uv run` at the repo root and inside the container, where
+        # the same directory is mounted at a different path. Without this the
+        # entry has to name a path that is correct in exactly one of the two.
+        local_checkpoint = Path(cache_dir) / pin.repo_id
+        source = str(local_checkpoint) if local_checkpoint.is_dir() else pin.repo_id
+
         load_kwargs = {
-            "pretrained_model_name_or_path": pin.repo_id,
+            "pretrained_model_name_or_path": source,
             "revision": revision,
             "cache_dir": str(cache_dir),
             "local_files_only": offline,

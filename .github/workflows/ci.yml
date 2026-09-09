@@ -38,6 +38,11 @@ jobs:
       - name: Start detector-service
         env:
           HF_HUB_OFFLINE: "1"
+          # Pinned to the checkpoint this workflow actually fetches. The registry
+          # default is `modernbert-ft`, a locally-trained checkpoint that lives in
+          # the gitignored model cache and cannot be downloaded — leaving CI on
+          # the default means it can never start the service it is testing.
+          DETECTOR_MODEL_KEY: baseline-bert
         run: |
           uv run uvicorn services.detector.app:app --port 8003 &
           for i in $(seq 1 60); do

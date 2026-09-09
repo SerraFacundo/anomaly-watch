@@ -47,13 +47,13 @@ models:
       use as a baseline; it would make any model look good by comparison.
 
   modernbert-ft:
-    # Local checkpoint, not a Hub repo — from_pretrained loads it as a plain
-    # directory (revision/cache_dir are ignored for local paths). Resolves
-    # from the repo root, so it only works for `uv run` invocations there —
-    # not yet moved into models/cache, so it will NOT resolve inside the
-    # Docker Compose detector container until it is (task 6.6 is still
-    # blocked on this machine having no docker/podman to verify against).
-    repo_id: ml/train/runs/modernbert-ft
+    # Local checkpoint, not a Hub repo. `repo_id` names a directory *inside the
+    # model cache*, which ml/scorer.py resolves against `cache_dir` — so this one
+    # entry works both from `uv run` at the repo root (models/cache/) and inside
+    # the detector container (/models/), where the same directory is mounted at a
+    # different path. It previously named a repo-relative training-output path,
+    # which resolved in exactly one of those two places.
+    repo_id: modernbert-ft
     revision: local
     license: apache-2.0
     role: finetune
