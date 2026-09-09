@@ -1,0 +1,116 @@
+# FluentBit agent for Anomaly Watch.
+#
+# Generated from this template per host — never edited by hand on the machine.
+# A fleet whose configs were each hand-tuned during an install is a fleet where
+# nobody can say what any given host is actually shipping.
+#
+# Substitutions: @@HOST@@, @@AGENT_TOKEN@@, @@INGEST_HOST@@, @@CA_FILE@@
+# Generate with: tools/render_agent_config.py
+
+[SERVICE]
+    Flush         5
+    Daemon        Off
+    Log_Level     info
+
+    # THE queue. There is no broker: this buffer is what absorbs the difference
+    # between how fast this host writes logs and how fast the central box can
+    # score them, and it is what keeps records alive when that box is down.
+    storage.path              /var/lib/fluent-bit/storage
+    storage.sync              normal
+    storage.checksum          on
+    # Bounded, so an outage cannot fill the disk of the machine being monitored.
+    # 512MB is roughly 8 hours at 200 lines/s uncompressed — long enough to ride
+    # out a restart or a night, short enough not to threaten the host.
+    storage.total_limit_size  512M
+    storage.backlog.mem_limit 64M
+
+# --- inputs ------------------------------------------------------------------
+# Add or remove per host. Every input must set storage.type filesystem, or its
+# records live in memory and die with the process.
+
+[INPUT]
+    Name              systemd
+    Tag               systemd.journal
+    storage.type      filesystem
+    Read_From_Tail    On
+    Strip_Underscores On
+
+[INPUT]
+    Name           tail
+    Tag            nginx.access
+    Path           /var/log/nginx/access.log
+    storage.type   filesystem
+    # Survives an agent restart without re-shipping the whole file.
+    DB             /var/lib/fluent-bit/tail-nginx-access.db
+    Refresh_Interval 5
+    Skip_Long_Lines On
+
+[INPUT]
+    Name           tail
+    Tag            nginx.error
+    Path           /var/log/nginx/error.log
+    storage.type   filesystem
+    DB             /var/lib/fluent-bit/tail-nginx-error.db
+    Refresh_Interval 5
+    Skip_Long_Lines On
+
+# --- shape into the wire contract --------------------------------------------
+# services/common/wire.py. schema_version travels with every record from the
+# first one, because these agents are updated on the customer's schedule and a
+# record written today must still be readable in a year.
+
+[FILTER]
+    Name   modify
+    Match  *
+    Set    schema_version 1.0
+    Set    host @@HOST@@
+
+[FILTER]
+    Name   modify
+    Match  systemd.journal
+    Set    source systemd.journal
+    Rename MESSAGE message
+    # systemd sets PRIORITY as a syslog number (0-7), not a word. It is
+    # forwarded as-is and mapped to a severity name in the collector, so the
+    # mapping lives in one place instead of being re-encoded per agent config.
+    Rename PRIORITY level
+    Rename SYSLOG_TIMESTAMP log_timestamp
+
+[FILTER]
+    Name   modify
+    Match  nginx.*
+    Rename log message
+    Set    source nginx
+
+# --- output ------------------------------------------------------------------
+
+[OUTPUT]
+    Name          http
+    Match         *
+    Host          @@INGEST_HOST@@
+    Port          443
+    URI           /ingest
+    Format        json
+    Json_Date_Key agent_ts
+    Json_Date_Format iso8601
+    Header        Authorization Bearer @@AGENT_TOKEN@@
+
+    tls           On
+    tls.verify    On
+    # Point at the CA that signed the ingest certificate. Never set
+    # tls.verify Off to make a connection work: that turns the TLS into
+    # decoration, since anything on the network can then present its own
+    # certificate and collect this host's logs.
+    tls.ca_file   @@CA_FILE@@
+
+    # Retry forever. Records stay in the disk buffer until they land or the
+    # buffer bound is reached; giving up would discard them silently, which is
+    # the one failure this whole design exists to avoid.
+    #
+    # This also covers backpressure: out_http treats any non-2xx as a failed
+    # flush and retries with backoff, so the 429 from ingest-service is handled
+    # by the same path. FluentBit does not read `Retry-After`, so the effective
+    # delay is its own backoff schedule rather than the value the service asked
+    # for — close enough in behaviour, and worth knowing before someone tunes
+    # INGEST_RETRY_AFTER_S expecting agents to obey it.
+    Retry_Limit   False

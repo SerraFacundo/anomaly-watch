@@ -2,7 +2,7 @@
 #
 # Model weights are NOT baked into the image. They are mounted from a cache
 # volume so the image stays small and a model swap never needs a rebuild.
-FROM python:3.12-slim
+FROM docker.io/library/python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -19,7 +19,7 @@ COPY pyproject.toml ./
 RUN uv pip install --system --no-cache \
     "torch>=2.4" --index-url https://download.pytorch.org/whl/cpu \
  && uv pip install --system --no-cache \
-    "transformers>=4.48" "fastapi>=0.115" "uvicorn[standard]>=0.32" "pydantic>=2.9" "pyyaml>=6.0"
+    "transformers>=4.48,<5" "fastapi>=0.115" "uvicorn[standard]>=0.32" "pydantic>=2.9" "pyyaml>=6.0"
 
 # Only what the service actually imports.
 COPY ml/registry.py ml/scorer.py ml/models.yaml ./ml/

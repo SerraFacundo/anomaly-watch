@@ -222,6 +222,24 @@ __marimo__/
 !data/samples/*.log
 # Model weights are pulled into a cache and mounted as a volume, never committed.
 models/cache/
+# Checkpoint archives moved by hand between machines. Multi-GB; a stray
+# `git add .` would otherwise put one in the history permanently.
+models/*.zip
+models/*.tar.gz
 ml/data/build/
 ml/train/runs/
 ml/export/onnx/
+# Anomaly Watch — transport
+# TLS keys for the agent endpoint. A private key in git is a private key on
+# every machine that ever cloned the repo.
+deploy/nginx/certs/
+# The ingest spool is live data in flight, not source.
+data/spool/
+.loadtest/
+# Downloaded training corpora. Multi-GB, fetched by ml/data/fetch_corpora.py.
+ml/data/raw/
+
+# Prepared corpus tarball, regenerable from ml/data/raw.
+corpus.tgz
+ml/data/build-local/
+data/*.zip

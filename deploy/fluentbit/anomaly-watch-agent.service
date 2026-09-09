@@ -1,0 +1,37 @@
+[Unit]
+Description=Anomaly Watch log agent (FluentBit)
+Documentation=file:///etc/fluent-bit/fluent-bit.conf
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/fluent-bit/bin/fluent-bit -c /etc/fluent-bit/fluent-bit.conf
+
+# The disk buffer is the whole durability story. If it is not writable the agent
+# silently degrades to memory buffering, so the directory is created by systemd
+# rather than left to whoever ran the install.
+StateDirectory=fluent-bit
+RuntimeDirectoryMode=0750
+
+Restart=always
+RestartSec=5
+
+# Reading logs needs no privileges beyond reading logs. The journal is readable
+# by members of systemd-journal; file inputs need the relevant group (adm on
+# Debian, or the log owner's group).
+User=fluent-bit
+Group=fluent-bit
+SupplementaryGroups=systemd-journal adm
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fluent-bit
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

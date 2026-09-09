@@ -29,12 +29,119 @@ from parser import LogParser  # noqa: E402
 
 DEFAULT_ENDPOINT = "http://localhost:8003"
 
+# Measured throughput of the promoted model on CPU — ml/eval/results/modernbert-ft.json.
+# The template report projects against this, so the projection moves when the
+# model does instead of quoting a number someone typed once.
+DETECTOR_RATE = 29.6
+
 
 def percentile(values: list[float], fraction: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
     return round(ordered[min(int(len(ordered) * fraction), len(ordered) - 1)], 2)
+
+
+def template_report(total_records: int, unique_templates: int, raw_rate: float = DETECTOR_RATE) -> dict:
+    """Project the score cache's effect from Drain3's template count.
+
+    The cache in `log-collector` scores each template once and serves repeats
+    for free, so the fraction of records that are *not* a template's first
+    sighting is the hit rate. This is the ceiling, not the delivered number:
+    it assumes an unbounded cache, no TTL expiry and no denylist bypass. The
+    real hit rate is strictly lower, which is why the gate is set at 90% rather
+    than at whatever this prints.
+    """
+    per_1000 = unique_templates / max(total_records, 1) * 1000
+    hit_rate = 1.0 - (unique_templates / max(total_records, 1))
+    miss_rate = max(1.0 - hit_rate, 1e-9)
+    return {
+        "records": total_records,
+        "unique_templates": unique_templates,
+        "templates_per_1000": round(per_1000, 1),
+        "hit_rate_ceiling": round(hit_rate, 4),
+        "effective_records_per_s": round(raw_rate / miss_rate, 1),
+        "raw_records_per_s": raw_rate,
+    }
+
+
+def print_template_report(report: dict) -> None:
+    print(f"records      : {report['records']:,}")
+    print(f"templates    : {report['unique_templates']:,} unique "
+          f"({report['templates_per_1000']} per 1,000 lines)")
+    print(f"hit ceiling  : {report['hit_rate_ceiling']:.2%}  "
+          f"(unbounded cache, no TTL, no denylist — the optimistic bound)")
+    print(f"effective    : {report['effective_records_per_s']:,.0f} records/s "
+          f"projected, from {report['raw_records_per_s']} records/s raw")
+
+
+def run_ingest_load(args) -> int:
+    """Offer a log file to `ingest-service` at a chosen rate.
+
+    Deliberately does no parsing: the point is to behave like an agent, so the
+    parsing, caching, shedding and backpressure all happen where they will in
+    production instead of being short-circuited by this script.
+
+    A 429 is not an error here. It is the pipeline asking the caller to hold,
+    exactly as a real agent would be asked, and it is counted rather than
+    retried so the report shows how much of the offered load was pushed back.
+    """
+    import httpx
+
+    headers = {"Authorization": f"Bearer {args.token}"} if args.token else {}
+    sent = accepted = throttled = failed = 0
+    batch: list[dict] = []
+    started = time.perf_counter()
+
+    def flush() -> None:
+        nonlocal accepted, throttled, failed
+        if not batch:
+            return
+        try:
+            response = client.post(f"{args.ingest}/ingest", json={"records": batch}, headers=headers, timeout=60.0)
+        except Exception:  # noqa: BLE001
+            failed += len(batch)
+            batch.clear()
+            return
+        if response.status_code == 429:
+            throttled += len(batch)
+        elif response.status_code < 300:
+            accepted += len(batch)
+        else:
+            failed += len(batch)
+            if failed <= len(batch):
+                print(f"ingest error {response.status_code}: {response.text[:200]}", file=sys.stderr)
+        batch.clear()
+
+    with httpx.Client() as client:
+        with args.logfile.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.rstrip("\n")
+                if not line.strip():
+                    continue
+                batch.append({"schema_version": "1.0", "host": args.host or "loadtest",
+                              "source": "loadtest", "message": line[:16000], "level": None})
+                sent += 1
+                if len(batch) >= args.batch_size:
+                    flush()
+                    if args.rate:
+                        # Pace against the offered rate rather than sleeping a
+                        # fixed amount, so the report's "offered" figure is real.
+                        target = started + sent / args.rate
+                        drift = target - time.perf_counter()
+                        if drift > 0:
+                            time.sleep(drift)
+                if args.limit and sent >= args.limit:
+                    break
+            flush()
+
+    elapsed = time.perf_counter() - started
+    print(f"offered  : {sent:,} lines in {elapsed:.1f}s ({sent / max(elapsed, 1e-9):.0f} lines/s)")
+    print(f"accepted : {accepted:,}")
+    print(f"throttled: {throttled:,} (429 — pipeline asked the agent to hold)")
+    if failed:
+        print(f"failed   : {failed:,}")
+    return 1 if failed else 0
 
 
 def post_batch(client, endpoint: str, records: list[dict]) -> dict:
@@ -115,11 +222,40 @@ def main() -> int:
     parser.add_argument("--show", type=int, default=5, help="print the N highest-scoring lines")
     parser.add_argument("--assert-anomalies", type=int, default=None,
                         help="CI mode: exit non-zero unless at least N anomalies are flagged")
+    parser.add_argument("--ingest", default=None, metavar="URL",
+                        help="Load-generator mode: post raw lines to ingest-service instead of "
+                             "scoring directly. Drives the full agent path, so backpressure and "
+                             "the drop policy are exercised rather than bypassed")
+    parser.add_argument("--token", default=None, help="agent token for --ingest mode")
+    parser.add_argument("--rate", type=float, default=None,
+                        help="lines/s to offer. Omit for as fast as possible")
+    parser.add_argument("--template-stats", action="store_true",
+                        help="Parse only: report template repetition and projected cache hit rate. "
+                             "No scoring, so it needs neither the model nor the service")
     args = parser.parse_args()
 
     if not args.logfile.exists():
         print(f"No such file: {args.logfile}", file=sys.stderr)
         return 1
+
+    if args.ingest:
+        return run_ingest_load(args)
+
+    if args.template_stats:
+        # Deliberately its own path: the measurement that gates the cache design
+        # must not require the thing it is measuring the need for.
+        stats_parser = LogParser()
+        parsed = 0
+        with args.logfile.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if stats_parser.parse(line) is None:
+                    continue
+                parsed += 1
+                if args.limit and parsed >= args.limit:
+                    break
+        print(f"source       : {args.logfile}")
+        print_template_report(template_report(parsed, stats_parser.template_count))
+        return 0
 
     import httpx
 
@@ -181,6 +317,8 @@ def main() -> int:
     print(f"elapsed  : {elapsed:.1f}s  ({len(scored_rows) / max(elapsed, 1e-9):.0f} records/s end to end)")
     print(f"batch p50/p95: {percentile(batch_latencies, 0.5)}ms / {percentile(batch_latencies, 0.95)}ms "
           f"(batch size {args.batch_size})")
+    print()
+    print_template_report(template_report(len(scored_rows), log_parser.template_count))
 
     if args.show and anomalies:
         print(f"\ntop {args.show} by score:")
