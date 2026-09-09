@@ -288,9 +288,13 @@ def main() -> int:
     baselines = list(args.baselines or [])
     models = list(args.models or [])
     if args.all:
-        baselines = ["level-keyword", "template-count"]
-        # 'rejected' models are excluded on purpose — see models.yaml.
-        models = [pin.key for pin in iter_pins() if pin.role in {"baseline", "finetuned"}]
+        baselines = sorted(set(baselines) | {"level-keyword", "template-count"})
+        # 'rejected' models are excluded on purpose — see models.yaml. Registry
+        # roles are "baseline" and "finetune" (models.yaml), not "finetuned" —
+        # that mismatch silently limited --all to baseline-bert alone, and
+        # combined with the overwrite this replaced, an explicit --model passed
+        # alongside --all was discarded rather than added.
+        models = sorted(set(models) | {pin.key for pin in iter_pins() if pin.role in {"baseline", "finetune"}})
 
     results: list[dict] = []
 
