@@ -34,14 +34,26 @@ BASE_MODEL_KEY = "modernbert-base"
 
 
 def load_jsonl(path: Path, limit: int | None = None) -> list[dict]:
+    """Read a split, striding rather than head-slicing when a limit applies.
+
+    A split holds one corpus after another, so taking the first N records takes
+    one corpus. Observed: `--train-limit 20000` on a 3.29%-anomaly split yielded
+    31 anomalies (0.15%) and a class weight of 322, because the head of the file
+    is all nginx from the quiet start of the capture. The same trap applies to
+    `--eval-limit`, and there it is worse than a misleading smoke run —
+    `metric_for_best_model="f1"` would pick the best checkpoint using a
+    validation subset that is missing most of one corpus.
+    """
     if not path.exists():
         raise FileNotFoundError(f"Missing {path}. Run: python ml/data/prepare.py")
-    records = []
     with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            records.append(json.loads(line))
-            if limit and len(records) >= limit:
-                break
+        records = [json.loads(line) for line in handle]
+    if limit and len(records) > limit:
+        # Evenly spaced across the whole file. An integer stride plus a trailing
+        # truncation is not enough: `[::6][:20000]` on 131,938 records drops the
+        # tail, and the tail is a whole corpus.
+        step = len(records) / limit
+        records = [records[int(index * step)] for index in range(limit)]
     return records
 
 
