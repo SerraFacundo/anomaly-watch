@@ -10,8 +10,12 @@ Sources (all permissively licensed, see ml/research/log-datasets.md):
   nginx   zanbil.ir access log, CC0. 10.4M lines, no labels — attacks are found
           by rule. The site is a real shop on the public internet, so it really
           is attacked: SQL injection, XSS, wp-login and phpMyAdmin probing.
-  winlog  NextronSystems/evtx-baseline (Apache-2.0) as negatives,
-          mdecrevoisier/EVTX-to-MITRE-Attack (CC0) as positives.
+  winlog    NextronSystems/evtx-baseline (Apache-2.0) as negatives,
+            mdecrevoisier/EVTX-to-MITRE-Attack (CC0) as positives.
+  weblogs   Zenodo Web Server Log Dataset (MIT, doi:10.5281/zenodo.20001206) —
+            real Apache + CyberPanel + auth.log + syslog from two organisations,
+            with expert-written ground-truth labelling rules. The only source in
+            this corpus with real auth.log attack lines.
 
 Usage:
     python ml/data/prepare_local.py
@@ -196,6 +200,40 @@ def read_evtx(root: Path, label: int, corpus: str, max_per_file: int) -> Iterato
             print(f"  ! skipped {path.name}: {exc}", file=sys.stderr)
 
 
+def cap_dominant_category(rows: list[dict], max_per_category: int, seed: int = 42) -> list[dict]:
+    """Even-sample any attack category that has swamped the rest.
+
+    Measured need: 294,304 of 297,375 weblogs positives (99%) are
+    `bruteforce_login_server_attempt` — near-identical 'Failed password for X
+    from Y' lines from one server under sustained real attack. Left alone, the
+    training set's positive class is in practice one template repeated 294k
+    times, while sqli/xss/rce sit in single digits. Same failure shape the
+    score cache guards against in production — one judgement applied to every
+    repeat — solved the same way: cap, don't discard the pattern entirely.
+
+    Only positives are touched. Grouping negatives the same way would put every
+    normal line under one `alert_category=None` bucket and downsample all of
+    them together, which is not the problem being fixed.
+    """
+    import random
+
+    normals = [row for row in rows if not row["label"]]
+    by_category: dict[str, list[dict]] = {}
+    for row in rows:
+        if row["label"]:
+            by_category.setdefault(row["alert_category"], []).append(row)
+
+    rng = random.Random(seed)
+    capped: list[dict] = []
+    for category, group in by_category.items():
+        if len(group) <= max_per_category:
+            capped.extend(group)
+            continue
+        rng.shuffle(group)
+        capped.extend(group[:max_per_category])
+    return normals + capped
+
+
 def stratified_split(records: list[dict], seed: int = 42) -> dict[str, list[dict]]:
     """Seeded, class-balanced split, for a corpus with no single timeline.
 
@@ -223,7 +261,114 @@ def stratified_split(records: list[dict], seed: int = 42) -> dict[str, list[dict
     return splits
 
 
+# --- expert-labelled web/auth/syslog (Zenodo Web Server Log Dataset) --------
+
+WEBLOGS_ROOT = RAW / "zenodo-weblogs"
+
+# org -> files worth reading. Not every file in the archive: org-y ships ~150
+# near-duplicate per-vhost access logs, and the ground-truth rules target the
+# CyberPanel admin panel (`verifyLogin`, `websiteFunctions`), not the vhosts —
+# reading all of them would be volume without matching signal.
+WEBLOG_FILES = {
+    "organization-x": [
+        "log/apache2/web-access.log", "log/apache2/web-access.log.1",
+        "log/auth.log", "log/auth.log.1",
+        "log/syslog", "log/syslog.1",
+    ],
+    "organization-y": [
+        "log/usr/local/lscp/cyberpanel/logs/access.log",
+        "log/var/log/auth.log", "log/var/log/auth.log.1",
+        "log/var/log/syslog", "log/var/log/syslog.1",
+    ],
+}
+
+# A status code check, disguised as a substring match, is the exact trap fixed
+# in services/collector/cache.py: a response byte count of 500-599 is not a
+# status code. Anchored to where Apache's combined format actually puts one —
+# right after the closing quote of the request line.
+_STATUS_CODE_RULE = re.compile(r"^code:\s*(\d{3})$", re.IGNORECASE)
+
+
+def load_ground_truth_rules(org: str) -> list[tuple[str, list[str]]]:
+    """(label, AND-tokens) per rule, any rule matching is a positive.
+
+    The dataset's own note says rules were authored to run against a
+    log2timeline/plaso timeline, not raw log text — confirmed here: "code: 404"
+    appears in the YAML and nowhere in the raw Apache log (grepped). That one
+    field-reference form is translated below; every other token is the literal
+    substring an analyst wrote after reading the actual attack, and does appear
+    verbatim in the raw files (`Go-http-client`, `Failed password for`,
+    `etc/passwd`, `verifyLogin`, a specific attacker or trusted IP).
+    """
+    import yaml
+
+    path = WEBLOGS_ROOT / org / "ground-truth" / f"{org}.yaml"
+    rules = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return [(rule["ground_truth_label"], rule["filter"]) for rule in rules]
+
+
+def _token_matches(token: str, line: str, line_lower: str) -> bool:
+    status = _STATUS_CODE_RULE.match(token)
+    if status:
+        return f'" {status.group(1)} ' in line
+    # Wildcard markers are SQL-LIKE style ("%Mozilla/5.0 ..."); a bare substring
+    # search already ignores what they would have bounded, so stripping them is
+    # the whole translation.
+    return token.strip("%").lower() in line_lower
+
+
+def classify_weblog(line: str, rules: list[tuple[str, list[str]]]) -> str | None:
+    lowered = line.lower()
+    for label, tokens in rules:
+        if all(_token_matches(token, line, lowered) for token in tokens):
+            return label
+    return None
+
+
+def read_weblog_file(path: Path, rules: list, stride: int, max_records: int) -> Iterator[dict]:
+    import gzip
+
+    if not path.exists():
+        return
+    opener = gzip.open if path.suffix == ".gz" else open
+    kept = 0
+    with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+        for index, line in enumerate(handle):
+            line = line.rstrip("\n").strip()
+            if not line:
+                continue
+            category = classify_weblog(line, rules)
+            if category is None and index % stride:
+                continue
+            message = _IPV4.sub("0.0.0.0", line)[:4000]  # a corrupt line can be pathological
+            yield {
+                "message": message,
+                "label": 0 if category is None else 1,
+                "alert_category": category,
+                "corpus": "weblogs",
+                "metadata": {},
+            }
+            kept += 1
+            if kept >= max_records:
+                return
+
+
+def read_weblogs(stride: int, max_records: int) -> Iterator[dict]:
+    for org, relative_paths in WEBLOG_FILES.items():
+        rules = load_ground_truth_rules(org)
+        for relative in relative_paths:
+            yield from read_weblog_file(WEBLOGS_ROOT / org / relative, rules, stride, max_records)
+
+
 # --- self-check -------------------------------------------------------------
+
+
+def collections_count(rows: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if row["label"]:
+            counts[row["alert_category"]] = counts.get(row["alert_category"], 0) + 1
+    return counts
 
 
 def self_check() -> None:
@@ -263,6 +408,13 @@ def self_check() -> None:
     assert "S-1-5-21-MASKED" in sid and "4230534742" not in sid, sid
     assert "S-1-5-18" in sid, f"well-known SID should survive: {sid}"
 
+    rules = [("dir_scan", ["code: 404", "MSIE 8.0"]), ("bruteforce", ["Failed password for"])]
+    assert classify_weblog('1.2.3.4 - - [x] "GET /a HTTP/1.1" 404 512 "-" "Mozilla/4.0 (MSIE 8.0)"', rules) == "dir_scan"
+    assert classify_weblog('1.2.3.4 - - [x] "GET /a HTTP/1.1" 200 404 "-" "Mozilla/4.0 (MSIE 8.0)"', rules) is None, \
+        "a 404-byte response body must not be read as a 404 status"
+    assert classify_weblog("Apr 27 sshd: Failed password for root from 1.2.3.4", rules) == "bruteforce"
+    assert classify_weblog("Apr 27 sshd: Accepted publickey for deploy", rules) is None
+
     shared = shared_event_ids([
         {"message": "EventID=4688 x", "label": 0}, {"message": "EventID=4688 y", "label": 1},
         {"message": "EventID=9999 z", "label": 1},
@@ -282,6 +434,17 @@ def self_check() -> None:
     assert sum(len(part) for part in parts.values()) == 200
     assert stratified_split(rows)["test"] == parts["test"], "split is not deterministic"
 
+    dominant = (
+        [{"label": 1, "alert_category": "bruteforce", "message": f"x{i}"} for i in range(1000)]
+        + [{"label": 1, "alert_category": "sqli", "message": f"y{i}"} for i in range(5)]
+        + [{"label": 0, "alert_category": None, "message": f"n{i}"} for i in range(2000)]
+    )
+    capped = cap_dominant_category(dominant, max_per_category=50)
+    by_cat = collections_count(capped)
+    assert by_cat.get("bruteforce", 0) == 50, by_cat
+    assert by_cat.get("sqli", 0) == 5, "a category under the cap must be untouched"
+    assert sum(1 for r in capped if not r["label"]) == 2000, "capping must not touch normals"
+
     print("self-check ok")
 
 
@@ -290,7 +453,11 @@ def self_check() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--corpus", action="append", dest="corpora", choices=["nginx", "winlog"])
+    parser.add_argument("--corpus", action="append", dest="corpora", choices=["nginx", "winlog", "weblogs"])
+    parser.add_argument("--weblog-stride", type=int, default=32, help="keep every Nth normal weblogs line")
+    parser.add_argument("--max-weblog-records", type=int, default=150_000, help="cap per weblogs file")
+    parser.add_argument("--max-weblog-category", type=int, default=10_000,
+                        help="cap any single weblogs attack category (measured need: ssh bruteforce alone)")
     parser.add_argument("--access-log", type=Path, default=RAW / "zanbil" / "access.log")
     parser.add_argument("--stride", type=int, default=64, help="keep every Nth normal nginx line")
     parser.add_argument("--max-records", type=int, default=400_000, help="cap per corpus")
@@ -306,7 +473,7 @@ def main() -> int:
         return 0
     self_check()
 
-    selected = args.corpora or ["nginx", "winlog"]
+    selected = args.corpora or ["nginx", "winlog", "weblogs"]
     records: list[dict] = []
     sources: dict[str, dict] = {}
 
@@ -337,13 +504,34 @@ def main() -> int:
                              "licence": "Apache-2.0 (benign) + CC0-1.0 (attacks)"}
         print(f"  {len(rows):,} records, anomaly rate {class_balance(rows)['anomaly_rate']:.2%}")
 
+    if "weblogs" in selected:
+        print("=== weblogs ===")
+        if not WEBLOGS_ROOT.exists():
+            print(f"missing {WEBLOGS_ROOT} — unzip organization-x.zip and organization-y.zip into it",
+                  file=sys.stderr)
+            return 1
+        rows = list(read_weblogs(args.weblog_stride, args.max_weblog_records))
+        before = len(rows)
+        rows = cap_dominant_category(rows, args.max_weblog_category)
+        if len(rows) != before:
+            print(f"  capped dominant categories: {before:,} -> {len(rows):,}")
+        records.extend(rows)
+        sources["weblogs"] = {**class_balance(rows), "stride": args.weblog_stride,
+                              "max_category": args.max_weblog_category,
+                              "licence": "MIT (licence field unverified — Zenodo unreachable at build time)",
+                              "source": "doi:10.5281/zenodo.20001206"}
+        print(f"  {len(rows):,} records, anomaly rate {class_balance(rows)['anomaly_rate']:.2%}")
+
     if not records:
         print("No records produced.", file=sys.stderr)
         return 1
 
     # nginx is one site's traffic in time order, so the tail is held out.
     # winlog has no single timeline (see stratified_split), so it is stratified.
-    splitters = {"nginx": chronological_split, "winlog": stratified_split}
+    # weblogs concatenates two organisations from non-overlapping time windows
+    # (org-x Oct 2025, org-y Dec 2023-Apr 2025) — same shape as winlog, not one
+    # timeline, so chronological splitting would strand one org in one split.
+    splitters = {"nginx": chronological_split, "winlog": stratified_split, "weblogs": stratified_split}
     splits: dict[str, list[dict]] = {"train": [], "validation": [], "test": []}
     for corpus in sources:
         corpus_rows = [record for record in records if record["corpus"] == corpus]
@@ -386,6 +574,18 @@ def main() -> int:
                 "machines than the benign baseline, so machine identity was the label. Host, domain, "
                 "account names and domain-relative SIDs are now masked, and records are restricted to "
                 "EventIDs present in both classes."
+            ),
+            "weblogs_licence_unverified": (
+                "Web Server Log Dataset licence is recorded as MIT in ml/research/log-datasets.md from "
+                "an earlier check, but Zenodo (doi:10.5281/zenodo.20001206) was unreachable when this "
+                "corpus was built and the field was not re-confirmed. Verify before this reaches a "
+                "shipped model."
+            ),
+            "weblogs_labels": (
+                "Ground-truth YAML rules shipped with the dataset, written by analysts who investigated "
+                "the real incidents. One field-reference form ('code: NNN', meant for a log2timeline "
+                "timeline) is translated to a real HTTP status check; every other token is matched as a "
+                "literal case-insensitive substring against the raw line."
             ),
             "leakage_warning": (
                 "Both label sources are shortcuts a model can learn instead of the task. Read every "
