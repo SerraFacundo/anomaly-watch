@@ -193,7 +193,12 @@ def main() -> int:
             return (loss, outputs) if return_outputs else loss
 
     args.out.mkdir(parents=True, exist_ok=True)
-    bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    # Compute capability, not torch.cuda.is_bf16_supported(). That call returns
+    # True on a T4 (cc 7.5) because it counts *emulated* bf16, which is exactly
+    # the slow path this check exists to avoid — the GPU then warns "does not
+    # support bfloat16 compilation natively, skipping" and falls back to fp32.
+    # Hardware bf16 starts at Ampere, cc 8.0.
+    bf16_ok = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
     if torch.cuda.is_available():
         print(f"precision  : {'bf16' if bf16_ok else 'fp16'} on {torch.cuda.get_device_name(0)}")
     training_arguments = TrainingArguments(
