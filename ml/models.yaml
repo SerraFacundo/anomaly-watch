@@ -66,6 +66,22 @@ models:
       full fine-tune. id2label is set explicitly during training, so the
       anomaly index resolves automatically — no anomaly_index override needed.
 
+  modernbert-ft-v2:
+    # Same local-checkpoint convention as modernbert-ft: a directory name inside
+    # the model cache, resolved by ml/scorer.py against cache_dir.
+    repo_id: modernbert-ft-v2
+    revision: local
+    license: internal
+    role: finetune
+    task: text-classification
+    notes: >-
+      Fine-tune of modernbert-base on ml/data/build-local (manifest
+      80fa3ec5fdfb14c7…), the CC0/Apache-2.0 nginx + Windows Event Log corpus.
+      Trained to replace modernbert-ft, which was trained on LogHub BGL — a
+      corpus whose own terms say "research or academic work" and which
+      transferred badly: 21.5% flagged on systemd journal, 99.0% on real nginx.
+      2 epochs, class weights, full fine-tune on a T4.
+
   modernbert-base:
     repo_id: answerdotai/ModernBERT-base
     revision: 8949b909ec900327062f0ebf497f51aef5e6f0c8
