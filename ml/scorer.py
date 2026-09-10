@@ -69,6 +69,7 @@ class LogScorer:
         num_threads: int | None = None,
         anomaly_index_override: int | None = None,
         offline: bool = True,
+        device: str | None = None,
     ) -> None:
         import torch
         from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
@@ -113,6 +114,14 @@ class LogScorer:
             ) from exc
 
         self.model.eval()
+        # Default "cpu", not auto-detected: detector-service must score on the
+        # exact hardware it was measured on (a PyME host has no GPU), so a
+        # caller that says nothing gets exactly today's behavior. Only the eval
+        # harness passes an explicit device, to use a GPU when one is sitting
+        # idle underneath it — running a comparison run's inference on CPU
+        # while a GPU goes unused was the actual bottleneck on a Colab session.
+        self.device = device or "cpu"
+        self.model.to(self.device)
         # Precedence: caller override > registry pin > checkpoint id2label > fallback.
         self.anomaly_index, self.anomaly_index_reason = resolve_anomaly_index(
             getattr(config, "id2label", None),
@@ -137,6 +146,7 @@ class LogScorer:
             max_length=self.max_length,
             return_tensors="pt",
         )
+        batch = {name: tensor.to(self.device) for name, tensor in batch.items()}
         with torch.inference_mode():
             logits = self.model(**batch).logits
             probabilities = torch.softmax(logits, dim=-1)[:, self.anomaly_index]

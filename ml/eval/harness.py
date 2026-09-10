@@ -137,6 +137,7 @@ def evaluate_model(
     checkpoint: Path | None = None,
     model_key: str | None = None,
     batch_size: int = 64,
+    device: str | None = None,
 ) -> dict:
     from scorer import LogScorer
 
@@ -151,11 +152,11 @@ def evaluate_model(
             license="internal",
             role="finetuned",
         )
-        scorer = LogScorer(pin, cache_dir=cache_dir, threshold=threshold, offline=True)
+        scorer = LogScorer(pin, cache_dir=cache_dir, threshold=threshold, offline=True, device=device)
         model_dir: Path | None = checkpoint
     else:
         pin = get_pin(model_key or name)
-        scorer = LogScorer(pin, cache_dir=cache_dir, threshold=threshold, offline=True)
+        scorer = LogScorer(pin, cache_dir=cache_dir, threshold=threshold, offline=True, device=device)
         model_dir = resolve_model_dir(pin, cache_dir)
 
     scores: list[float] = []
@@ -276,7 +277,17 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--device", default=None,
+                        help="cpu/cuda for scoring. Default: cuda if available, else cpu. The harness is "
+                             "eval-only and never runs in the deployed detector, so using an idle GPU here "
+                             "is always a win — unlike detector-service, which must match production hardware")
     args = parser.parse_args()
+
+    device = args.device
+    if device is None:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"device     : {device}")
 
     manifest = load_manifest(args.data_dir)
     test_records = load_split("test", args.data_dir, args.limit)
@@ -308,7 +319,7 @@ def main() -> int:
         print(f"\n=== model: {key} ===")
         try:
             result = evaluate_model(key, test_records, train_records, args.threshold, args.cache_dir,
-                                    model_key=key)
+                                    model_key=key, device=device)
         except Exception as exc:  # noqa: BLE001
             print(f"  ! skipped: {exc}")
             continue
@@ -319,7 +330,7 @@ def main() -> int:
         name = args.name or args.checkpoint.name
         print(f"\n=== checkpoint: {name} ===")
         result = evaluate_model(name, test_records, train_records, args.threshold, args.cache_dir,
-                                checkpoint=args.checkpoint)
+                                checkpoint=args.checkpoint, device=device)
         write_result(result, manifest, args.results_dir, len(test_records), args.limit)
         results.append(result)
 
