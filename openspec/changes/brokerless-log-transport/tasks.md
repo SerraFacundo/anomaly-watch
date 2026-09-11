@@ -218,14 +218,44 @@
 ## 12. Follow-up changes to open (do not implement here)
 
 - [ ] 12.1 ONNX + int8 export, if task 4 or task 10 shows the cache alone does not close the gap
-- [ ] 12.2a Corpus built from what is on disk — `ml/data/prepare_local.py`. Reuses `prepare.py`'s split, manifest and hashing rather than duplicating them; only the readers are new. nginx attacks labelled by rule against the **decoded request path only** (user-agent and referer are attacker-controlled, and matching them would flag any visitor who mentions `wp-login`). EVTX rendered as `EventID=N field=value ...` from `EventData` only, with `Channel`, `Provider` and `Level` excluded as leakage. Client IPv4s masked before anything is written. `finetune.py --data-dir` already accepts it, so no training code changes.
+- [x] 12.2a Corpus built from what is on disk — `ml/data/prepare_local.py`. Reuses `prepare.py`'s split, manifest and hashing rather than duplicating them; only the readers are new. Three sources in the final v3 corpus, 366,735 records:
 
-  **Split bug caught by the first build.** Reusing `chronological_split` for every corpus produced `train 0.61%` / `test 25.56%` anomalies: winlog's negatives and positives are two separate collections concatenated, so splitting by position sent every Windows attack to the tail. Chronological splitting is right for one stream in time order and meaningless for a corpus assembled from two. nginx keeps the chronological split — it genuinely is one site's traffic in order — and winlog gets a seeded, class-stratified one. Shuffling is not leakage where there was no chronology to violate. Guarded by an assert that fails on exactly this input shape
-- [ ] 12.2 Domain fine-tune on real logs — **no longer conditional. Task 10.4 showed precision collapsed off BGL in both directions**: 96% of flags came from one routine desktop template, while failed SSH auth and a Postgres `FATAL` scored 0.0000. This is now the highest-value open work in the project.
+  | source | records | anomaly rate | licence |
+  |---|---|---|---|
+  | nginx (zanbil.ir) | 163,156 | 0.74% | CC0 ✔ verified |
+  | winlog (evtx-baseline + EVTX-to-MITRE-Attack) | 25,328 | 18.58% | Apache-2.0 + CC0 ✔ verified |
+  | weblogs (Zenodo Web Server Log Dataset, organization-x/y) | 178,251 | 7.33% (after capping, see below) | **MIT recorded but unverified — Zenodo unreachable at build time, resolving it is the user's call, explicitly not a blocker** |
 
-  **Scope decided: Linux *and* Windows.** The detector must handle nginx, sshd and systemd *plus* Windows Event Log. This is a widening — `ARCHITECTURE.md` §9 previously listed Windows only as a possibility. It has consequences: Windows events are structured XML records rather than text lines, so the Drain3 path and the `WireRecord.message` field both need a decision about how an EVTX record becomes one scored string. That decision is not made yet.
+  nginx attacks labelled by rule against the **decoded request path only** (user-agent and referer are attacker-controlled, matching them would flag any visitor who mentions `wp-login`). EVTX rendered as `EventID=N field=value ...` from `EventData` only, `Channel`/`Provider`/`Level` excluded as leakage, and further restricted to the 86 EventIDs present in both classes (77 attack-only IDs would have been a free answer — measured: EventID-alone scored precision 0.998 before this restriction, 0.667 after). weblogs labelled with the dataset's own expert-written ground-truth YAML rules; one field-reference form (`"code: 404"`, written for a log2timeline timeline) is translated to a real HTTP status check anchored to where Apache actually puts it — the same 5xx-vs-byte-count trap already fixed once in `services/collector/cache.py`. Client IPv4s masked everywhere before anything is written.
 
-  **Sourcing: public datasets, not customer logs.** Collecting logs from a real customer is not available — no time. A research note on downloadable Linux and Windows corpora, with licence terms for commercial deployment, is in progress
+  **Two bugs caught by measurement, not assumed absent:**
+  - *Split.* `chronological_split` on every corpus gave winlog `train 0.61%` / `test 25.56%` anomalies — two concatenated collections, not one timeline, so splitting by position stranded every Windows attack in the tail. weblogs has the same shape (org-x Oct 2025, org-y Dec 2023–Apr 2025, non-overlapping). Both now use a seeded, class-stratified split; nginx keeps the chronological one because it genuinely is one site's traffic in order. Guarded by an assert on this exact input shape.
+  - *Category dominance.* 294,304 of 297,375 raw weblogs positives (99%) were one template, `Failed password for X from Y`, from a server under real sustained bruteforce. Capped by even-sampling any category past 10,000 — same principle as the score cache grouping repeats in production, applied to training data instead of live traffic.
+
+  `finetune.py --data-dir` already accepted the output shape, so no training code changes were needed.
+
+- [x] 12.2 Domain fine-tune on real logs, trained and evaluated. **Result: promising, not yet promoted.**
+
+  Trained on a free Colab T4 (`ml/train/colab_train_and_eval.ipynb`) — full fine-tune, 2 epochs, fp16. Getting there needed several real fixes, now committed: the notebook was cloning `main` instead of this branch (nothing it depends on exists there yet); `transformers` needed an upper bound (`<5`, since 5.x removed `TrainingArguments.warmup_ratio` — also fixed in `pyproject.toml` and the detector `Dockerfile`, which would have broken the next production image build the same way); `torch.cuda.is_bf16_supported()` returns `True` on a T4 by counting *emulated* bf16 — the actual gate is compute capability ≥ 8 (Ampere), fixed in `finetune.py`; and `LogScorer` never moved the model off CPU, so the harness ran at the same ~29.6 records/s as production CPU even with an idle T4 underneath it — fixed with an optional `device` param defaulting to `"cpu"` (production, `services/detector`, is completely unaffected; only the harness auto-detects and uses CUDA).
+
+  **Measured on the v3 test split (55,012 records, 2,712 anomalies), on GPU:**
+
+  | | F1 | vs classical floor |
+  |---|---|---|
+  | modernbert-ft-v3 | **0.986** | level-keyword 0.610, template-count 0.129 |
+
+  False positive rate on normals: 0.09% (47/52,300). Per-category recall breaks down cleanly across ~50 distinct attack categories including rare ones (sqli, xss at n=1–2) — not just the dominant bruteforce template — which is real evidence against the "it just memorized one repeated pattern" failure mode. Genuine soft spots with enough samples to trust: T1574 DLL side-loading (40%, n=5), T1202 Indirect Command Execution (70%, n=27), nginx path traversal (80%, n=10), T1562.001 Impair Defenses (84%, n=19).
+
+  **What this does not prove**, because it cannot: whether the model generalizes past the specific attack phrasing the labelling rules cover. Both label sources are rule/substring-derived; a model that recognizes the rules well is not the same claim as one that recognizes novel attacks. Only pilot traffic answers that.
+
+  **Left open on purpose ("lo vemos otro día"), not forgotten:**
+  - `smoke_score.py`'s 8-line probe was never run against v3 — the concrete check for whether `Accepted publickey` (v2's false positive, scored 0.81) is fixed
+  - `modernbert-ft-v2` was never evaluated by the harness against any held-out split — only its smoke test and live pipeline flag-rates exist. A same-split harness comparison (`ml/eval/harness.py --checkpoint .../modernbert-ft-v2`) is needed before claiming v3 beats v2, not just beats the classical floor
+  - the checkpoint (7 root files, **not** the `checkpoints/` subfolder — that's optimizer state from intermediate epochs, ~1.8GB each, never needed for inference) has not been downloaded from Drive into `models/cache/modernbert-ft-v3/`, registered in `ml/models.yaml`, or run through `ml/promote.py`. **Nothing is promoted. The registry default is still `modernbert-ft`, and the deployed stack still runs `baseline-bert` per the CI pin**
+
+  **Scope was widened mid-flight: Linux *and* Windows**, not Windows-as-a-possibility as `ARCHITECTURE.md` §9 previously had it. The EVTX-to-text decision got made as a side effect of building the corpus (`EventID=N field=value ...`, identity masked) rather than as its own upfront design step — recorded here so it's visible that the decision exists and where it lives, not proposed as a separate open question anymore
+- [ ] 12.2b Run `ml/smoke_score.py` against `modernbert-ft-v3` and `ml/eval/harness.py --checkpoint .../modernbert-ft-v2` on the same v3 test split, in the still-live Colab session if it survives, otherwise after downloading both checkpoints locally. Answers: is v2's `Accepted publickey` false positive actually fixed, and does v3 beat v2 on the same data, not just the classical floor
+- [ ] 12.2c Download the v3 checkpoint's 7 root files (not `checkpoints/`) into `models/cache/modernbert-ft-v3/`, add the registry entry to `ml/models.yaml`, run `ml/promote.py --candidate modernbert-ft-v3`. **If the gate fails it is not promoted** — report the number either way. Blocked on nothing except doing it; the eval numbers already justify trying
 - [ ] 12.3 Windowed / session-level detection, still deferred, still the reason ModernBERT's 8k context was chosen
 - [ ] 12.4 `api` service and SSE push, now unblocked by having a defined event path
 - [ ] 12.5 Reintroduce a broker (Redpanda) only if a concrete second consumer or a replay requirement appears — with the requirement named, not anticipated
