@@ -37,7 +37,8 @@
 - [x] 6.1 Run the CI smoke test (`replay.py … --assert-anomalies 1`) without `--report-metrics` and confirm the behavior and output are unchanged.
 - [x] 6.2 Run with `--report-metrics` against an unreachable endpoint and confirm the run completes, the exit code matches 6.1, and the summary reports undelivered windows.
 - [x] 6.3 Run with `--report-metrics` against a running AnomalyWatch API (disposable Postgres/Redis, stub detector). Confirm the reported `count` matches the parsed record count and that p50/p95 derived from the buckets are consistent with the batch latencies noted in 1.2.
-- [ ] 6.4 End-to-end against a running AnomalyWatch is tracked in AnomalyWatch's `add-response-time-metric` tasks, group 9.
+- [x] 6.4 End-to-end against a running AnomalyWatch is tracked in AnomalyWatch's `add-response-time-metric` tasks, group 9.
+  > Done 2026-09-24, verified from the AnomalyWatch side (`add-response-time-metric` tasks 9.1–9.4): stack up with `PIPELINE_SERVICE_TOKEN`, migrated and seeded, a stub detector-service (same `/model`/`/score` contract, no model) standing in for the real one. 9.3 confirmed `count` on `GET /summary` matches parsed records; 9.4 stopped the AnomalyWatch API mid-run and confirmed the buffer here (`Reporter`) retried and delivered every window with no gaps or duplicates once the API came back.
 
 ## 7. Documentation
 
@@ -45,6 +46,7 @@
 - [x] 7.2 `ARCHITECTURE.md` §8.1: add `ingested_at` and `analyzed_at` to the `anomalies` column table.
 - [x] 7.3 `README.md`: document `--report-metrics`, `--aw-endpoint`, `--metrics-buffer` and `PIPELINE_SERVICE_TOKEN`, with the example command.
 
-## 8. CI (pending)
+## 8. CI
 
-- [ ] 8.1 Add a `uv run pytest` step to `.github/workflows/ci.yml`, before the detector-service steps: the unit tests need neither model weights nor a running service, so they should fail fast. `uv sync --extra detector --extra ml` already installs the `dev` group by default. Deferred on purpose: changing CI is a separate decision from this change.
+- [x] 8.1 Add a `uv run pytest` step to `.github/workflows/ci.yml`, before the detector-service steps: the unit tests need neither model weights nor a running service, so they should fail fast. `uv sync --extra detector --extra ml` already installs the `dev` group by default. Deferred on purpose: changing CI is a separate decision from this change.
+  > Implemented as its own `unit-tests` job rather than a step inside `detector-smoke`: it runs `uv sync` (no `--extra detector/--extra ml`, since the unit tests need neither) and `uv run pytest`, in parallel with the smoke job, so a broken unit test gives a fast signal without waiting on or being masked by the model download.
