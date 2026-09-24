@@ -37,7 +37,7 @@ def test_scoring_payload_carries_no_timing_fields():
 
 @pytest.mark.parametrize(
     ("duration_ms", "bucket"),
-    [(0, 0), (10, 0), (10.1, 1), (60000, len(BOUNDS_MS) - 1), (60000.1, len(BOUNDS_MS)), (10**9, len(BOUNDS_MS))],
+    [(0, 0), (50, 0), (50.1, 1), (120000, len(BOUNDS_MS) - 1), (120000.1, len(BOUNDS_MS)), (10**9, len(BOUNDS_MS))],
 )
 def test_a_value_on_a_bound_lands_in_that_bounds_bucket(duration_ms, bucket):
     window = LatencyWindow(T0)

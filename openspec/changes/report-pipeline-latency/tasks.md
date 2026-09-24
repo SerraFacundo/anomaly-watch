@@ -1,7 +1,8 @@
 ## 1. Preparation
 
 - [x] 1.1 Create branch `feature/report-pipeline-latency` from `main`.
-- [ ] 1.2 Run `uv run python tools/replay.py data/samples/HDFS_2k.log` and note the batch p50/p95 it prints today, as the baseline to compare the reported windows against in 6.3.
+- [x] 1.2 Run `uv run python tools/replay.py data/samples/HDFS_2k.log` and note the batch p50/p95 it prints today, as the baseline to compare the reported windows against in 6.3.
+  > Done 2026-09-24 with `baseline-bert` on CPU (`modernbert-ft` is not on this machine). Batch 64: p50 7.6 s, p95 14.8 s. Batch 32: p50 3.4 s, p95 4.7 s. This replaced the first bucket bounds (see design, Decision 5).
 - [x] 1.3 Confirm the bucket bounds and the `POST /api/v1/pipeline/latency-windows` payload against AnomalyWatch's `add-response-time-metric` change (design Decisions 4 and 7, spec `pipeline-metrics`). Any disagreement is resolved there first.
 
 ## 2. Stamping
@@ -13,7 +14,7 @@
 
 ## 3. Histograms
 
-- [x] 3.1 Create `tools/latency.py` with the bounds constant (`10 … 60000 ms, +Inf`), a `LatencyWindow` (start, count, sum, max, bucket counts) and a `WindowAggregator` that assigns samples by the UTC minute of `analyzed_at`.
+- [x] 3.1 Create `tools/latency.py` with the bounds constant (`50 … 120000 ms, +Inf`, dense between 1 and 60 s), a `LatencyWindow` (start, count, sum, max, bucket counts) and a `WindowAggregator` that assigns samples by the UTC minute of `analyzed_at`.
 - [x] 3.2 Close windows when a sample lands in a later minute, on a periodic check between batches, and at end of run.
 - [x] 3.3 Unit tests: minute-boundary assignment, bucket placement at the exact bound values, the `+Inf` bucket, count == sum of bucket counts, bucket count length == bounds + 1, and a quiet minute still being closed.
 
@@ -33,7 +34,7 @@
 
 ## 6. Verification
 
-- [ ] 6.1 Run the CI smoke test (`replay.py … --assert-anomalies 1`) without `--report-metrics` and confirm the behavior and output are unchanged.
+- [x] 6.1 Run the CI smoke test (`replay.py … --assert-anomalies 1`) without `--report-metrics` and confirm the behavior and output are unchanged.
 - [x] 6.2 Run with `--report-metrics` against an unreachable endpoint and confirm the run completes, the exit code matches 6.1, and the summary reports undelivered windows.
 - [x] 6.3 Run with `--report-metrics` against a running AnomalyWatch API (disposable Postgres/Redis, stub detector). Confirm the reported `count` matches the parsed record count and that p50/p95 derived from the buckets are consistent with the batch latencies noted in 1.2.
 - [ ] 6.4 End-to-end against a running AnomalyWatch is tracked in AnomalyWatch's `add-response-time-metric` tasks, group 9.

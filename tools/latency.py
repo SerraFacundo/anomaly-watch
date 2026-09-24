@@ -16,7 +16,10 @@ from datetime import UTC, datetime
 
 # Must match LatencyBuckets.BoundsMs in AnomalyWatch. A mismatch is rejected with
 # a 400 that names the expected bounds; change them on that side first.
-BOUNDS_MS: tuple[int, ...] = (10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000)
+BOUNDS_MS: tuple[int, ...] = (
+    50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000, 7500,
+    10000, 15000, 20000, 30000, 45000, 60000, 120000,
+)
 STAGE_ANALYSIS = "ANALYSIS"
 
 DEFAULT_BUFFER_SIZE = 60

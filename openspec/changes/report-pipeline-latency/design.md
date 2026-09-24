@@ -48,7 +48,12 @@ The duration covers parse + waiting for the batch to fill + the `/score` round t
 
 Each sample is assigned to the UTC minute of its `analyzed_at` (when the measurement completes). A window holds `count`, `sum_ms`, `max_ms` and `bucket_counts` over the bounds published by AnomalyWatch:
 
-`10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, +Inf` (ms)
+`50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000, 7500, 10000, 15000, 20000, 30000, 45000, 60000, 120000, +Inf` (ms)
+
+Dense between 1 and 60 s because that is where analysis latency lands on CPU. Measured with
+`baseline-bert` on `HDFS_2k.log`: p50 7.6 s / p95 14.8 s at batch 64, 3.4 s / 4.7 s at batch 32.
+The first version of this list (`10 … 60000`) put a single bucket between 10 and 30 s and
+overstated the batch-64 p95 by 27%; with this one the error stays around 5% or less.
 
 The bounds are declared once in `tools/latency.py` and sent with every report. AnomalyWatch rejects mismatched bounds with a 400, which is the safety net if they drift — not the synchronization mechanism. A change to the bounds starts on the AnomalyWatch side.
 
