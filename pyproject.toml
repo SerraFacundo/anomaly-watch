@@ -46,5 +46,17 @@ explicit = true
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
 
+# Unit tests. Installed by default with `uv sync`; httpx is here so the tests do
+# not need the whole `ml` extra.
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tools"]
+
 [tool.setuptools]
 packages = []

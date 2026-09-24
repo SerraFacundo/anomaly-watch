@@ -176,12 +176,24 @@ not the other way around.
 
 ```mermaid
 flowchart LR
-    FILE["Log file on disk"] -->|read| RP["tools/replay.py"]
+    FILE["Log file on disk"] -->|"read (stamps ingested_at)"| RP["tools/replay.py"]
     RP -->|Drain3 parse| REC["Record: raw message + template_id + params + host + ts"]
     REC -->|"POST /score (batched)"| DS["detector-service (CPU transformer)"]
-    DS -->|scores| RP
+    DS -->|"scores (stamps analyzed_at)"| RP
     RP -->|flagged anomalies| PG["Postgres (anomalies table)"]
+    RP -.->|"latency windows (--report-metrics)"| AW["AnomalyWatch API"]
 ```
+
+**Response-time metric.** `replay.py` stamps `ingested_at` when it reads a line
+and `analyzed_at` when that line's batch comes back from `/score`. The analysis
+duration is measured on a monotonic clock and aggregated into per-minute
+histograms that, with `--report-metrics`, are reported to AnomalyWatch
+(`POST /api/v1/pipeline/latency-windows`, authenticated with
+`PIPELINE_SERVICE_TOKEN`). The bucket bounds and payload are owned by
+AnomalyWatch (TDD_0016). Reporting is opt-in, retries from a bounded in-memory
+buffer, and never affects detection or the exit code. In the Kafka topology,
+`ingested_at` becomes the `LogAppendTime` of the `raw-logs` record. Timing never
+travels in the `/score` contract.
 
 **Target topology (deferred).** Unchanged in intent from the original design;
 the detection box is now a call to `detector-service` rather than an embedded
@@ -540,6 +552,7 @@ Postgres is the sole relational data store. Schema is organized into logical are
 | `score` | Raw model output in `[0,1]`, stored unthresholded |
 | `threshold` | The threshold in force when the row was written |
 | `model_key`, `model_revision` | Which model, at which exact revision |
+| `ingested_at`, `analyzed_at` | When the platform received the line and when its score came back. Nullable: rows stored before these columns existed keep them empty. Forwarded when the alert is created, so its response time can be measured |
 
 Storing `model_key` / `model_revision` / `threshold` alongside the score is what
 keeps historical anomalies interpretable across a model swap. A bare score from

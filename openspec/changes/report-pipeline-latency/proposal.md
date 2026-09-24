@@ -30,8 +30,9 @@ This change makes the pipeline stamp those instants, measure the analysis stage,
 
 ## Impact
 
-- **Files**: `tools/parser.py` (ingestion stamp), `tools/replay.py` (analysis stamp, flags, reporting), new `tools/latency.py` (histogram + reporter + buffer), `ARCHITECTURE.md` (§3.1 demo path, §8.1 `anomalies` columns).
+- **Files**: `tools/replay.py` (stamps, flags, reporting), new `tools/latency.py` (stamps, histogram, reporter + buffer), new `tests/` with `pytest` in a `dev` dependency group, `ARCHITECTURE.md` (§3.1 demo path, §8.1 `anomalies` columns), `README.md`. `tools/parser.py` is unchanged: the stamp is taken by the caller, around it.
 - **Dependencies**: none new — `httpx` is already used by `replay.py`.
 - **Contract dependency**: bucket bounds and payload are owned by AnomalyWatch (`add-response-time-metric`, `pipeline-metrics`). This repo consumes them; it does not define them.
 - **Systems**: `detector-service` untouched. The `anomalies` table gains two nullable columns.
 - **Configuration**: `PIPELINE_SERVICE_TOKEN` environment variable, same value as the AnomalyWatch deployment.
+- **CI**: pending. The new unit tests are not run by `ci.yml` yet; adding a `uv run pytest` step is tracked as task 8.1.

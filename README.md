@@ -38,6 +38,35 @@ Procesar un archivo de log de ejemplo:
 uv run python tools/replay.py data/samples/HDFS_2k.log
 ```
 
+### Reportar el tiempo de respuesta a AnomalyWatch
+
+Con `--report-metrics`, el replay mide cuánto tarda cada línea desde que se lee
+hasta que vuelve su score, y lo reporta a la API de AnomalyWatch como
+histogramas por minuto. Es lo que alimenta la KPI card de tiempo de respuesta.
+
+```bash
+PIPELINE_SERVICE_TOKEN=<mismo valor que en el .env de AnomalyWatch> \
+  uv run python tools/replay.py data/samples/HDFS_2k.log --report-metrics --aw-endpoint http://localhost:8080
+```
+
+| Opción | Qué hace |
+|---|---|
+| `--report-metrics` | Activa el reporte. Sin este flag no hay ninguna llamada a AnomalyWatch |
+| `--aw-endpoint` | URL base de la API de AnomalyWatch. Obligatoria con `--report-metrics` |
+| `--metrics-buffer` | Ventanas sin confirmar que se guardan para reintentar (default 60). Si se llena, se descartan las más viejas y se cuentan |
+| `PIPELINE_SERVICE_TOKEN` | Variable de entorno con el token de servicio. Obligatoria con `--report-metrics` |
+
+Si falta el endpoint o el token, el replay no arranca. Si AnomalyWatch no
+responde, el replay termina igual y con el mismo exit code; el resumen final
+informa cuántas ventanas se reportaron, cuántas quedaron sin entregar y cuántas
+se descartaron.
+
+## Tests
+
+```bash
+uv run pytest
+```
+
 ## Estructura
 
 | Ruta | Qué hay |
