@@ -60,6 +60,10 @@ jobs:
       - name: Start detector-service
         env:
           HF_HUB_OFFLINE: "1"
+          # models.yaml's default is modernbert-ft, a local fine-tune checkpoint
+          # this job never fetches. Pin the smoke test to the model actually
+          # downloaded above.
+          DETECTOR_MODEL_KEY: baseline-bert
         run: |
           uv run uvicorn services.detector.app:app --port 8003 &
           for i in $(seq 1 60); do
