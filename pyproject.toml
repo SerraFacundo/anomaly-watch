@@ -27,6 +27,11 @@ ml = [
     "httpx>=0.28",
     "psycopg[binary]>=3.2",
 ]
+# What the replay container ships: HTTP client + Postgres driver, no torch.
+replay = [
+    "httpx>=0.28",
+    "psycopg[binary]>=3.2",
+]
 # Fine-tuning. GPU box or Colab only, never installed at a PyME site.
 train = [
     "accelerate>=1.2",

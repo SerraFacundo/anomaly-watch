@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -28,6 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from parser import LogParser  # noqa: E402
 
 DEFAULT_ENDPOINT = "http://localhost:8003"
+# Never the product stack's database: that one lives on 5432, this repo's
+# compose Postgres is published on 5433. ANOMALY_WATCH_ML_DSN (set inside the
+# stack's own `replay` container) takes precedence; --dsn overrides both.
+DEFAULT_DSN = "postgresql://anomaly:anomaly@localhost:5433/anomaly_watch"
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -111,7 +116,7 @@ def main() -> int:
     parser.add_argument("--host", default=None, help="source host label for the records")
     parser.add_argument("--out", type=Path, default=None, help="write scored records as JSONL")
     parser.add_argument("--store-postgres", action="store_true")
-    parser.add_argument("--dsn", default="postgresql://anomaly:anomaly@localhost:5432/anomaly_watch")
+    parser.add_argument("--dsn", default=os.environ.get("ANOMALY_WATCH_ML_DSN", DEFAULT_DSN))
     parser.add_argument("--show", type=int, default=5, help="print the N highest-scoring lines")
     parser.add_argument("--assert-anomalies", type=int, default=None,
                         help="CI mode: exit non-zero unless at least N anomalies are flagged")

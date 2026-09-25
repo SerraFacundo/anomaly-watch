@@ -38,6 +38,44 @@ Procesar un archivo de log de ejemplo:
 uv run python tools/replay.py data/samples/HDFS_2k.log
 ```
 
+## Levantar con Docker
+
+`docker-compose.yml` levanta `postgres` y `detector` (la capa de modelo). No es
+la topologia final de `ARCHITECTURE.md` (Kafka, Ollama, api, rag-engine,
+notifier): esos servicios todavia no tienen implementacion.
+
+Este stack coexiste con el del producto (`Anomaly-Watch/`) en el mismo host,
+en cualquier orden de arranque — nombre de proyecto fijo (`anomaly-watch-ml`)
+y ningun puerto en comun:
+
+| Servicio | Puerto (este repo) | Puerto (Anomaly-Watch) |
+|---|---|---|
+| Postgres | `127.0.0.1:5433` (`ML_POSTGRES_PORT`) | `5432` (`db`) |
+| detector / api | `127.0.0.1:8003` (`ML_DETECTOR_PORT`) | `8080` (`api`) |
+| — | — | `6379` redis, `3000` web, `8025` MailHog |
+
+```bash
+cp .env.example .env               # completar credenciales
+uv run python ml/download_models.py  # poblar el cache de pesos en el host
+docker compose up -d --build
+docker compose run --rm replay data/samples/HDFS_2k.log --store-postgres
+```
+
+`replay` corre solo bajo demanda (`profiles: ["tools"]`); `docker compose up`
+nunca lo levanta. Dentro del stack llega al detector y a Postgres por la red
+interna, y a la API de Anomaly-Watch via `host.docker.internal` (sin unirse a
+su red) si esta corriendo — ver `ML_AW_ENDPOINT` en `.env.example`.
+
+**BREAKING:** `tools/replay.py --store-postgres` sin `--dsn` ya no apunta a
+`localhost:5432` (la base del producto). Ahora usa `ANOMALY_WATCH_ML_DSN` si
+esta definida, y si no, `localhost:5433` — el Postgres de este stack. Pasar
+`--dsn` sigue funcionando como antes.
+
+Si el volumen `postgres-data` viene de antes de este cambio (imagen
+Debian-based de `pgvector/pgvector`), el nuevo proyecto usa un volumen propio
+bajo `anomaly-watch-ml`; el anterior queda huerfano. Para limpiarlo:
+`docker compose down -v` apunta solo a los recursos de este proyecto.
+
 ## Estructura
 
 | Ruta | Qué hay |

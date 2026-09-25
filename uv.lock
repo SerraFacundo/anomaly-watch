@@ -204,6 +204,10 @@ ml = [
     { name = "psycopg", extra = ["binary"] },
     { name = "scikit-learn" },
 ]
+replay = [
+    { name = "httpx" },
+    { name = "psycopg", extra = ["binary"] },
+]
 train = [
     { name = "accelerate" },
     { name = "peft" },
@@ -216,11 +220,13 @@ requires-dist = [
     { name = "drain3", specifier = ">=0.9.11" },
     { name = "fastapi", marker = "extra == 'detector'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'ml'", specifier = ">=0.28" },
+    { name = "httpx", marker = "extra == 'replay'", specifier = ">=0.28" },
     { name = "huggingface-hub", marker = "extra == 'ml'", specifier = ">=0.27" },
     { name = "numpy", marker = "extra == 'ml'", specifier = ">=2.0" },
     { name = "optimum", extras = ["onnxruntime"], marker = "extra == 'export'", specifier = ">=1.24" },
     { name = "peft", marker = "extra == 'train'", specifier = ">=0.14" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'ml'", specifier = ">=3.2" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'replay'", specifier = ">=3.2" },
     { name = "pydantic", marker = "extra == 'detector'", specifier = ">=2.9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "scikit-learn", marker = "extra == 'ml'", specifier = ">=1.5" },
@@ -228,7 +234,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'detector'", specifier = ">=4.48" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'detector'", specifier = ">=0.32" },
 ]
-provides-extras = ["detector", "ml", "train", "export"]
+provides-extras = ["detector", "ml", "replay", "train", "export"]
 
 [[package]]
 name = "anyio"
@@ -1966,13 +1972,13 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx" },
-    { name = "setuptools" },
-    { name = "sympy" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "sys_platform == 'darwin'" },
+    { name = "fsspec", marker = "sys_platform == 'darwin'" },
+    { name = "jinja2", marker = "sys_platform == 'darwin'" },
+    { name = "networkx", marker = "sys_platform == 'darwin'" },
+    { name = "setuptools", marker = "sys_platform == 'darwin'" },
+    { name = "sympy", marker = "sys_platform == 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027", upload-time = "2026-07-08T12:26:18Z" },
@@ -1997,13 +2003,13 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx" },
-    { name = "setuptools" },
-    { name = "sympy" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "fsspec", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "networkx", marker = "sys_platform != 'darwin'" },
+    { name = "setuptools", marker = "sys_platform != 'darwin'" },
+    { name = "sympy", marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-linux_s390x.whl", hash = "sha256:ffadde149901c8afa138daa38d898264003cfcf1a3336ca5cd964b5af227d867", upload-time = "2026-07-08T19:28:41Z" },

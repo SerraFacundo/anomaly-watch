@@ -1,0 +1,34 @@
+# Both service images build with the repo root as context (they need
+# pyproject.toml + uv.lock). Keep the transferred context to what a build
+# actually needs; weights and datasets alone are hundreds of MB.
+
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+models/
+ml/data/
+ml/train/
+ml/eval/results/
+
+openspec/
+
+.env
+.env.*
+
+docker-compose*.yml
+**/Dockerfile*
+
+.agent/
+.agents/
+.claude/
+.distrobox/
+.github/
+.vscode/
+.idea/
+
+# data/samples/ (the bundled replay demo log) is intentionally not excluded above.

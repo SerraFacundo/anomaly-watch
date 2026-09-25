@@ -1,32 +1,46 @@
-# Anomaly Watch — demo-phase stack.
+# Anomaly Watch (ML repo) — demo-phase stack.
 #
 # This is deliberately the *slice that exists*, not the full topology in
 # ARCHITECTURE.md. Kafka, Ollama, Nginx, api, rag-engine and notifier are the
-# target end state; they are not here because they have no implementation yet and
-# an empty container proves nothing.
+# target end state; they are not here because they have no implementation yet
+# and an empty container proves nothing.
 #
-# Demo path:  log file -> tools/replay.py (Drain3) -> detector-service -> postgres
+# Demo path:  log file -> replay (Drain3) -> detector -> postgres
 #
-# Before first run, populate the model cache on the host:
-#     uv run python ml/download_models.py
+# Coexistence with the AnomalyWatch product stack: this project is named
+# `anomaly-watch-ml` so its containers, network and volume can never collide
+# with the product stack's `anomaly-watch_*` resources, whatever the checkout
+# directory is called. It never publishes the product stack's reserved host
+# ports (5432 db, 6379 redis, 8080 api, 3000 web, 8025 MailHog) — only
+# `detector` (8003) and `postgres` (5433) are published, on 127.0.0.1. Either
+# stack can be started in either order.
+#
+# Before first run:
+#   cp .env.example .env   # fill in credentials
+#   uv run python ml/download_models.py
+
+name: anomaly-watch-ml
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16-alpine
     environment:
-      POSTGRES_USER: anomaly
-      POSTGRES_PASSWORD: anomaly
-      POSTGRES_DB: anomaly_watch
+      POSTGRES_USER: "${ML_POSTGRES_USER:?set ML_POSTGRES_USER in .env}"
+      POSTGRES_PASSWORD: "${ML_POSTGRES_PASSWORD:?set ML_POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: "${ML_POSTGRES_DB:?set ML_POSTGRES_DB in .env}"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U anomaly -d anomaly_watch"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks: [anomaly-watch]
-    # Internal only. Nothing but the future Nginx should ever be host-exposed.
-    expose: ["5432"]
+    restart: unless-stopped
+    networks: [anomaly-watch-ml]
+    # Host-side --store-postgres and psql inspection. Loopback only: the demo
+    # credentials are not something to expose to the LAN.
+    ports:
+      - "127.0.0.1:${ML_POSTGRES_PORT:-5433}:5432"
 
   detector:
     build:
@@ -34,28 +48,58 @@ services:
       dockerfile: services/detector/Dockerfile
     environment:
       # Promoting a model is this line plus a restart. Nothing else.
-      DETECTOR_MODEL_KEY: "${DETECTOR_MODEL_KEY:-baseline-bert}"
-      DETECTOR_THRESHOLD: "${DETECTOR_THRESHOLD:-0.5}"
-      DETECTOR_MAX_BATCH_SIZE: "${DETECTOR_MAX_BATCH_SIZE:-256}"
-      DETECTOR_MAX_LENGTH: "${DETECTOR_MAX_LENGTH:-256}"
-      # Bounded so inference cannot starve the co-located services on a single
-      # PyME host.
-      DETECTOR_NUM_THREADS: "${DETECTOR_NUM_THREADS:-2}"
+      DETECTOR_MODEL_KEY: "${ML_DETECTOR_MODEL_KEY:-baseline-bert}"
+      DETECTOR_THRESHOLD: "${ML_DETECTOR_THRESHOLD:-0.5}"
+      DETECTOR_MAX_BATCH_SIZE: "${ML_DETECTOR_MAX_BATCH_SIZE:-256}"
+      DETECTOR_MAX_LENGTH: "${ML_DETECTOR_MAX_LENGTH:-256}"
+      # Bounded so inference cannot starve the co-located product stack on a
+      # single PyME host.
+      DETECTOR_NUM_THREADS: "${ML_DETECTOR_NUM_THREADS:-2}"
       HF_HUB_OFFLINE: "1"
       ANOMALY_WATCH_MODEL_CACHE: /models
     volumes:
-      # Read-only: the service loads weights, it never writes them.
+      # Read-only: the service loads weights and reads past eval results, it
+      # never writes either.
       - ./models/cache:/models:ro
       - ./ml/eval/results:/app/ml/eval/results:ro
-    networks: [anomaly-watch]
-    expose: ["8003"]
+    restart: unless-stopped
+    networks: [anomaly-watch-ml]
+    # host-side `uv run python tools/replay.py` and `curl /readyz`. Loopback
+    # only: this is an unauthenticated scoring API.
+    ports:
+      - "127.0.0.1:${ML_DETECTOR_PORT:-8003}:8003"
     depends_on:
       postgres:
+        condition: service_healthy
+
+  # One-off demo transport: `docker compose run --rm replay <logfile> [...]`.
+  # Never started by `docker compose up` (tools profile).
+  replay:
+    build:
+      context: .
+      dockerfile: tools/Dockerfile
+    profiles: ["tools"]
+    environment:
+      # In-network Postgres, built from the same credentials as the `postgres`
+      # service above — never the product database (see tools/replay.py D8).
+      ANOMALY_WATCH_ML_DSN: "postgresql://${ML_POSTGRES_USER:?set ML_POSTGRES_USER in .env}:${ML_POSTGRES_PASSWORD:?set ML_POSTGRES_PASSWORD in .env}@postgres:5432/${ML_POSTGRES_DB:?set ML_POSTGRES_DB in .env}"
+      # Reaches the AnomalyWatch API through the host gateway, not by joining
+      # its network (see design D6). Inert until #28 (--report-metrics) lands.
+      ML_AW_ENDPOINT: "${ML_AW_ENDPOINT:-http://host.docker.internal:8080}"
+      PIPELINE_SERVICE_TOKEN: "${PIPELINE_SERVICE_TOKEN:-}"
+    volumes:
+      # Read-only: replay reads log files, it never writes into the mount.
+      - ./data:/app/data:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [anomaly-watch-ml]
+    depends_on:
+      detector:
         condition: service_healthy
 
 volumes:
   postgres-data:
 
 networks:
-  anomaly-watch:
+  anomaly-watch-ml:
     driver: bridge

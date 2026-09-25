@@ -469,7 +469,7 @@ All services (except FluentBit agents) run in a single Docker Compose stack on t
 |---------|-------|-------------|-------|
 | **nginx** | nginx:alpine | 80, 443 | Reverse proxy, TLS termination |
 | **kafka** | confluentinc/cp-kafka (KRaft) | 9092 (internal) | No ZooKeeper, KRaft consensus |
-| **postgres** | postgres + pgvector | 5432 (internal) | pgvector extension pre-installed |
+| **postgres** | postgres + pgvector | 5432 (internal) | pgvector extension pre-installed. **Currently implemented** as `postgres:16-alpine` (no pgvector yet — nothing uses it until the RAG engine exists), with host bindings on `127.0.0.1` instead of fully internal, see below |
 | **ollama** | ollama/ollama | 11434 (internal) | LLM model runtime |
 | **log-ingestor** | custom (Python) | — | Kafka consumer, no HTTP port |
 | **anomaly-detector** | custom (Python) | — | Kafka consumer, calls detector-service |
@@ -482,11 +482,23 @@ All services (except FluentBit agents) run in a single Docker Compose stack on t
 All custom services share a common Docker network. Only Nginx ports are exposed to the host.
 
 **Currently implemented.** `docker-compose.yml` in the repo contains the demo
-slice only — `postgres` and `detector`. The rest of this table is the target
-state; those services have no implementation yet and shipping empty containers
-would misrepresent what works. Model weights are **not** baked into the detector
-image: they are mounted from `./models/cache`, so the image stays small and a
-model swap never requires a rebuild.
+slice only — `postgres` and `detector`, plus a `replay` service (the demo
+transport, under the `tools` profile, not started by `up`). The rest of this
+table is the target state; those services have no implementation yet and
+shipping empty containers would misrepresent what works. Model weights are **not**
+baked into the detector image: they are mounted from `./models/cache`, so the
+image stays small and a model swap never requires a rebuild.
+
+The compose project is named `anomaly-watch-ml` so it coexists with the
+`Anomaly-Watch` product stack on the same host in either start order, without
+colliding on container names, networks, volumes or host ports. Unlike the
+target table above (only Nginx exposed to the host), the demo-phase stack
+publishes `detector` and `postgres` to `127.0.0.1` — a developer needs both
+reachable from the host — on `8003` and `5433` respectively, configurable via
+`ML_DETECTOR_PORT` / `ML_POSTGRES_PORT`. `5433`, not `5432`: the product
+stack's Postgres already owns `5432` on the same host. See
+[README.md](README.md#levantar-con-docker) for the full port table and the
+`.env` setup.
 
 Populate the cache before first run:
 
