@@ -18,6 +18,11 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          # v5's default flipped to true and `uv cache prune` hangs ~5min then
+          # fails (exit 2) on this runner post-job, after the real test steps
+          # already passed. Pin it off; pruning is a cache-size optimization,
+          # not correctness.
+          prune-cache: false
 
       - name: Install dependencies
         run: uv sync --extra detector --extra ml
