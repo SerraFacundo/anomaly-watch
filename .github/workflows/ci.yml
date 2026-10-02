@@ -86,3 +86,17 @@ jobs:
         run: |
           curl -sf localhost:8003/model | tee /dev/stderr | \
             python -c "import json,sys; d=json.load(sys.stdin); assert d['revision'] and d['revision']!='None', 'model revision not pinned'"
+
+      # The detector runs under `uv run`, which holds uv's cache lock while it
+      # lives. setup-uv's post step prunes the cache before saving it, and on a
+      # cache miss that prune waits on the lock until uv's 300 s timeout and
+      # fails the job. Stop the detector first, whatever happened above.
+      - name: Stop detector-service
+        if: always()
+        run: |
+          pkill -f "uvicorn services.detector.app" || true
+          for i in $(seq 1 15); do
+            pgrep -f "uvicorn services.detector.app" > /dev/null || exit 0
+            sleep 1
+          done
+          pkill -9 -f "uvicorn services.detector.app" || true
