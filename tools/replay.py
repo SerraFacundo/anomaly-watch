@@ -10,7 +10,9 @@ against the bundled sample.
 
 With --report-metrics it also measures how long each line takes from being read
 to being scored, and reports that latency to AnomalyWatch as per-minute
-histograms. Reporting never affects detection or the exit code.
+histograms. With --report-anomalies it reports every flagged line to
+AnomalyWatch, which classifies them into alerts. Reporting never affects
+detection or the exit code.
 
 Usage:
     python tools/replay.py data/samples/HDFS_2k.log
@@ -18,6 +20,8 @@ Usage:
     python tools/replay.py data/samples/HDFS_2k.log --assert-anomalies 1
     PIPELINE_SERVICE_TOKEN=... python tools/replay.py data/samples/HDFS_2k.log \\
         --report-metrics --aw-endpoint http://localhost:8080
+    PIPELINE_SERVICE_TOKEN=... python tools/replay.py data/samples/HDFS_2k.log \\
+        --report-anomalies --host web-front-01.prod.internal --aw-endpoint http://localhost:8080
 """
 
 from __future__ import annotations
@@ -34,6 +38,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from anomaly_reporting import DEFAULT_BUFFER_SIZE as DEFAULT_ANOMALIES_BUFFER  # noqa: E402
+from anomaly_reporting import AnomalyReporter, Model  # noqa: E402
 from latency import DEFAULT_BUFFER_SIZE, Reporter, Stamp, WindowAggregator, utc_now  # noqa: E402
 from parser import LogParser  # noqa: E402
 
@@ -41,16 +47,41 @@ DEFAULT_ENDPOINT = "http://localhost:8003"
 TOKEN_VARIABLE = "PIPELINE_SERVICE_TOKEN"
 
 
-def reporting_config_errors(report_metrics: bool, aw_endpoint: str | None, token: str | None) -> list[str]:
-    """What is missing to report latency. Empty when reporting is off or fully configured."""
-    if not report_metrics:
+def reporting_config_errors(
+    report_metrics: bool,
+    aw_endpoint: str | None,
+    token: str | None,
+    report_anomalies: bool = False,
+    host: str | None = None,
+) -> list[str]:
+    """What is missing to report to AnomalyWatch. Empty when reporting is off or fully configured."""
+    flags = [flag for flag, enabled in (("--report-metrics", report_metrics),
+                                        ("--report-anomalies", report_anomalies)) if enabled]
+    if not flags:
         return []
+    needed_by = " and ".join(flags)
     errors = []
     if not aw_endpoint:
-        errors.append("--aw-endpoint is required with --report-metrics")
+        errors.append(f"--aw-endpoint is required with {needed_by}")
     if not token:
-        errors.append(f"{TOKEN_VARIABLE} must be set in the environment with --report-metrics")
+        errors.append(f"{TOKEN_VARIABLE} must be set in the environment with {needed_by}")
+    if report_anomalies and not host:
+        errors.append("--host is required with --report-anomalies: AnomalyWatch resolves each anomaly "
+                      "to a node of its inventory by hostname, and rejects unknown hosts")
     return errors
+
+
+def assign_anomaly_ids(rows: list[dict]) -> list[dict]:
+    """Give each flagged row its own `anomaly_id` and return the flagged rows.
+
+    Assigned once, when the line is flagged, so the JSONL output, the `anomalies`
+    table and every report (including resends) carry the same id. Random, not
+    derived from the content: two identical lines are two occurrences.
+    """
+    flagged = [row for row in rows if row["is_anomaly"]]
+    for row in flagged:
+        row["anomaly_id"] = str(uuid.uuid4())
+    return flagged
 
 
 def _json_default(value):
@@ -102,7 +133,8 @@ def store_postgres(rows: list[dict], dsn: str, model_key: str, model_revision: s
                     model_key     TEXT        NOT NULL,
                     model_revision TEXT       NOT NULL,
                     ingested_at   TIMESTAMPTZ,
-                    analyzed_at   TIMESTAMPTZ
+                    analyzed_at   TIMESTAMPTZ,
+                    anomaly_id    UUID
                 )
                 """
             )
@@ -110,14 +142,15 @@ def store_postgres(rows: list[dict], dsn: str, model_key: str, model_revision: s
             # columns existed; older rows keep them NULL.
             cursor.execute("ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ")
             cursor.execute("ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMPTZ")
+            cursor.execute("ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS anomaly_id UUID")
             cursor.executemany(
                 """
                 INSERT INTO anomalies
                     (host, log_timestamp, template_id, template, message, score, threshold,
-                     model_key, model_revision, ingested_at, analyzed_at)
+                     model_key, model_revision, ingested_at, analyzed_at, anomaly_id)
                 VALUES (%(host)s, %(timestamp)s, %(template_id)s, %(template)s, %(message)s,
                         %(score)s, %(threshold)s, %(model_key)s, %(model_revision)s,
-                        %(ingested_at)s, %(analyzed_at)s)
+                        %(ingested_at)s, %(analyzed_at)s, %(anomaly_id)s)
                 """,
                 [
                     {
@@ -132,6 +165,7 @@ def store_postgres(rows: list[dict], dsn: str, model_key: str, model_revision: s
                         "model_revision": model_revision,
                         "ingested_at": row.get("ingested_at"),
                         "analyzed_at": row.get("analyzed_at"),
+                        "anomaly_id": row.get("anomaly_id"),
                     }
                     for row in rows
                 ],
@@ -158,6 +192,12 @@ def main() -> int:
     parser.add_argument("--aw-endpoint", default=None, help="AnomalyWatch API base URL, e.g. http://localhost:8080")
     parser.add_argument("--metrics-buffer", type=int, default=DEFAULT_BUFFER_SIZE,
                         help="max unconfirmed latency windows kept for retry (oldest dropped first)")
+    parser.add_argument("--report-anomalies", action="store_true",
+                        help=f"report flagged anomalies to AnomalyWatch (token from {TOKEN_VARIABLE}; needs --host)")
+    parser.add_argument("--anomalies-buffer", type=int, default=DEFAULT_ANOMALIES_BUFFER,
+                        help="max unconfirmed anomalies kept for retry (oldest dropped first)")
+    parser.add_argument("--log-source", default=None,
+                        help="log source reported with each anomaly (default: the log file name)")
     args = parser.parse_args()
 
     if not args.logfile.exists():
@@ -165,10 +205,11 @@ def main() -> int:
         return 1
 
     token = os.environ.get(TOKEN_VARIABLE)
-    config_errors = reporting_config_errors(args.report_metrics, args.aw_endpoint, token)
+    config_errors = reporting_config_errors(
+        args.report_metrics, args.aw_endpoint, token, args.report_anomalies, args.host)
     if config_errors:
         for error in config_errors:
-            print(f"Cannot report metrics: {error}", file=sys.stderr)
+            print(f"Cannot report to AnomalyWatch: {error}", file=sys.stderr)
         return 2
 
     import httpx
@@ -190,12 +231,25 @@ def main() -> int:
             print("Start it with: uv run uvicorn services.detector.app:app --port 8003", file=sys.stderr)
             return 1
 
+        # One id per run, shared by both reports so they can be correlated.
+        instance_id = f"replay-{uuid.uuid4().hex[:8]}"
+
+        def log_stderr(message: str) -> None:
+            print(message, file=sys.stderr)
+
         reporter = None
         if args.report_metrics:
             reporter = Reporter(
                 client, args.aw_endpoint, token, source="replay",
-                instance_id=f"replay-{uuid.uuid4().hex[:8]}", buffer_size=args.metrics_buffer,
-                log=lambda message: print(message, file=sys.stderr),
+                instance_id=instance_id, buffer_size=args.metrics_buffer, log=log_stderr,
+            )
+
+        anomaly_reporter = None
+        if args.report_anomalies:
+            anomaly_reporter = AnomalyReporter(
+                client, args.aw_endpoint, token, source="replay",
+                instance_id=instance_id, buffer_size=args.anomalies_buffer, log=log_stderr,
+                log_source=args.log_source or args.logfile.name,
             )
 
         # batch holds exactly what /score declares; timing stays on this side of the contract.
@@ -214,15 +268,18 @@ def main() -> int:
             threshold = payload["threshold"]
             model_key = payload["model_key"]
             model_revision = payload["model_revision"]
+            batch_rows = []
             for record, stamp, result in zip(batch, stamps, payload["results"], strict=True):
                 aggregator.add(stamp.elapsed_ms_until(analyzed), analyzed.wall)
-                scored_rows.append({
+                batch_rows.append({
                     **record,
                     "score": result["score"],
                     "is_anomaly": result["is_anomaly"],
                     "ingested_at": stamp.wall,
                     "analyzed_at": analyzed.wall,
                 })
+            flagged = assign_anomaly_ids(batch_rows)
+            scored_rows.extend(batch_rows)
             batch.clear()
             stamps.clear()
 
@@ -232,6 +289,10 @@ def main() -> int:
                 if closed:
                     reporter.enqueue(closed)
                     reporter.flush()
+            if anomaly_reporter is not None:
+                # The model of this batch, not of the run: it can change if the detector restarts.
+                anomaly_reporter.enqueue(flagged, Model(model_key, model_revision, threshold))
+                anomaly_reporter.flush()
 
         with args.logfile.open(encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -252,6 +313,12 @@ def main() -> int:
             reporter.enqueue(aggregator.close_all())
             reporter.flush()
 
+        if anomaly_reporter is not None:
+            # One retry at the end; what is still undelivered shows in the summary.
+            anomaly_reporter.flush()
+            if anomaly_reporter.pending:
+                anomaly_reporter.flush()
+
     elapsed = time.perf_counter() - started
     anomalies = [row for row in scored_rows if row["is_anomaly"]]
 
@@ -263,6 +330,8 @@ def main() -> int:
           f"(batch size {args.batch_size})")
     if reporter is not None:
         print(f"latency  : {reporter.summary()}")
+    if anomaly_reporter is not None:
+        print(f"reported : {anomaly_reporter.summary()}")
 
     if args.show and anomalies:
         print(f"\ntop {args.show} by score:")

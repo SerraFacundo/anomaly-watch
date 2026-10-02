@@ -61,6 +61,53 @@ responde, el replay termina igual y con el mismo exit code; el resumen final
 informa cuántas ventanas se reportaron, cuántas quedaron sin entregar y cuántas
 se descartaron.
 
+### Reportar las anomalías a AnomalyWatch
+
+Con `--report-anomalies`, el replay manda a la API de AnomalyWatch cada línea
+que el detector marcó como anómala. AnomalyWatch la evalúa contra sus reglas de
+detección, la agrupa en una alerta y notifica. Solo viajan las líneas marcadas;
+el umbral lo sigue decidiendo el modelo.
+
+La demo de punta a punta, contra un AnomalyWatch levantado y sembrado, reporta
+las anomalías y el tiempo de respuesta en la misma corrida:
+
+```bash
+PIPELINE_SERVICE_TOKEN=<mismo valor que en el .env de AnomalyWatch> \
+  uv run python tools/replay.py data/samples/HDFS_2k.log \
+    --report-anomalies --report-metrics \
+    --host web-front-01.prod.internal --aw-endpoint http://localhost:8080
+```
+
+| Opción | Qué hace |
+|---|---|
+| `--report-anomalies` | Activa el reporte. Sin este flag no se reporta ninguna anomalía |
+| `--host` | Hostname del nodo de origen. Obligatorio: AnomalyWatch resuelve cada anomalía a un nodo de su inventario y rechaza los hosts desconocidos. En el seed de la demo, `web-front-01.prod.internal` |
+| `--aw-endpoint` | URL base de la API de AnomalyWatch. Obligatoria |
+| `--log-source` | Origen del log que viaja con cada anomalía (default: el nombre del archivo) |
+| `--anomalies-buffer` | Anomalías sin confirmar que se guardan para reintentar (default 5000). Si se llena, se descartan las más viejas y se cuentan |
+| `PIPELINE_SERVICE_TOKEN` | Variable de entorno con el token de servicio. Obligatoria |
+
+Cada anomalía lleva un `anomaly_id` que se asigna al marcarla y es el mismo en
+el JSONL de `--out`, en la tabla `anomalies` de `--store-postgres` y en
+AnomalyWatch. Si un reporte se reenvía (por ejemplo, después de un timeout),
+AnomalyWatch lo reconoce como duplicado y no abre una segunda alerta.
+
+Al final, el replay imprime una línea `reported` con el resultado:
+
+```
+reported : 12 accepted, 0 duplicate(s), 0 rejected, 0 dropped, 0 undelivered; alerts created: ALT-1001
+```
+
+- **accepted:** AnomalyWatch las registró como evidencia.
+- **duplicate(s):** ya estaban registradas; pasa cuando se reenvía un reporte.
+- **rejected:** AnomalyWatch las rechazó, con el motivo entre paréntesis. `UNKNOWN_HOST` casi siempre significa un `--host` equivocado; `INVALID`, un dato fuera de rango. No se reenvían.
+- **dropped:** se descartaron porque el buffer se llenó durante una caída larga.
+- **undelivered:** seguían sin confirmar al terminar la corrida. Quedan en `--out` y `--store-postgres` con su `anomaly_id`.
+- **alerts created:** los códigos de las alertas que abrió AnomalyWatch.
+
+Si falta el endpoint, el token o el host, el replay no arranca. Si AnomalyWatch
+no responde, el replay termina igual y con el mismo exit code.
+
 ## Tests
 
 ```bash

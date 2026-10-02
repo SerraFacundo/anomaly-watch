@@ -141,12 +141,17 @@ graph TB
 | Service | Technology | Responsibility | Default Port |
 |---------|-----------|---------------|-------------|
 | **log-ingestor** | Python / Drain3 | Consumes raw logs from Kafka, extracts parameterized log templates using Drain3 algorithm, publishes records to Kafka | — (consumer) |
-| **anomaly-detector** | Python | Consumes parsed records from Kafka and calls `detector-service` to score them. Holds no model of its own — it owns threshold policy, deduplication and alert triggering | — (consumer) |
+| **anomaly-detector** | Python | Consumes parsed records from Kafka and calls `detector-service` to score them. Holds no model of its own — it owns the threshold policy and reports the flagged anomalies to the AnomalyWatch API, which deduplicates them and decides which alert to open | — (consumer) |
 | **detector-service** | Python / FastAPI + transformers | Serves the anomaly model over HTTP (`POST /score`). CPU inference. The one component that loads model weights | 8003 (internal) |
 
 > **Demo-phase note.** `anomaly-detector` does not exist yet. During the demo
 > phase its role is played by `tools/replay.py`, which reads a log file, parses
 > it with Drain3, and calls `detector-service` directly — no Kafka. See §3.1.
+>
+> **Who opens alerts.** The pipeline decides *what is anomalous* (the model's
+> threshold). AnomalyWatch decides *which alert to open*: grouping anomalies
+> into alerts needs the alert state and the detection rules, and both live
+> there (`POST /api/v1/pipeline/anomalies`, change `add-alert-classification`).
 
 ### 2.3 Application Services
 
@@ -182,6 +187,8 @@ flowchart LR
     DS -->|"scores (stamps analyzed_at)"| RP
     RP -->|flagged anomalies| PG["Postgres (anomalies table)"]
     RP -.->|"latency windows (--report-metrics)"| AW["AnomalyWatch API"]
+    RP -.->|"flagged anomalies (--report-anomalies)"| AW
+    AW -->|"classify: rules, grouping"| AL["AnomalyWatch alerts"]
 ```
 
 **Response-time metric.** `replay.py` stamps `ingested_at` when it reads a line
@@ -194,6 +201,19 @@ AnomalyWatch (TDD_0016). Reporting is opt-in, retries from a bounded in-memory
 buffer, and never affects detection or the exit code. In the Kafka topology,
 `ingested_at` becomes the `LogAppendTime` of the `raw-logs` record. Timing never
 travels in the `/score` contract.
+
+**Anomaly reporting.** With `--report-anomalies`, every line the detector flags
+gets an `anomaly_id` (UUID4) and is reported to AnomalyWatch
+(`POST /api/v1/pipeline/anomalies`, same endpoint and token as the latency
+report). Each report declares the model (key, revision, threshold) and carries
+at most 500 anomalies of a single model. The `anomaly_id` is AnomalyWatch's
+idempotency key, so a resend after a timeout comes back `DUPLICATE` instead of
+opening a second alert. The same id is written to the JSONL output and the
+`anomalies` table. `--host` is required, because AnomalyWatch resolves each
+anomaly to a node of its inventory by hostname and rejects unknown hosts.
+Like the latency report, it is opt-in, retries from a bounded in-memory
+buffer, and never affects detection or the exit code. Lines below the
+threshold are never reported.
 
 **Target topology (deferred).** Unchanged in intent from the original design;
 the detection box is now a call to `detector-service` rather than an embedded
@@ -421,8 +441,9 @@ The **notifier** service dispatches alert notifications through:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Detected: anomaly-detector flags anomaly
-    Detected --> Stored: API stores in Postgres
+    [*] --> Reported: anomaly-detector flags and reports anomaly
+    Reported --> Classified: API evaluates rules and groups into an alert
+    Classified --> Stored: API stores in Postgres
     Stored --> Pushed: SSE push to dashboard
     Stored --> Notified: notifier sends email/webhook
     Pushed --> Viewed: user sees on dashboard
@@ -431,11 +452,12 @@ stateDiagram-v2
     Acknowledged --> [*]
 ```
 
-1. **Detected** — anomaly-detector flags a log sequence as anomalous
-2. **Stored** — API stores the alert (with RAG enrichment) in Postgres
-3. **SSE push** — API pushes event to connected dashboard clients
-4. **Notification** — notifier sends email/webhook to configured recipients
-5. **Acknowledged** — user acknowledges the alert through the dashboard or API
+1. **Reported** — anomaly-detector flags a log line as anomalous and reports it, with its `anomaly_id`, to the API
+2. **Classified** — the API matches it against the detection rules and groups it into an open alert, or opens a new one once the rule's occurrence threshold is reached; a repeated `anomaly_id` is a duplicate
+3. **Stored** — API stores the alert (with RAG enrichment) in Postgres
+4. **SSE push** — API pushes event to connected dashboard clients
+5. **Notification** — notifier sends email/webhook to configured recipients
+6. **Acknowledged** — user acknowledges the alert through the dashboard or API
 
 ---
 
@@ -553,6 +575,7 @@ Postgres is the sole relational data store. Schema is organized into logical are
 | `threshold` | The threshold in force when the row was written |
 | `model_key`, `model_revision` | Which model, at which exact revision |
 | `ingested_at`, `analyzed_at` | When the platform received the line and when its score came back. Nullable: rows stored before these columns existed keep them empty. Forwarded when the alert is created, so its response time can be measured |
+| `anomaly_id` | The UUID assigned when the line was flagged; the same id reported to AnomalyWatch, so a row can be matched against an alert's evidence and resent by hand. Nullable: rows stored before this column existed keep it empty |
 
 Storing `model_key` / `model_revision` / `threshold` alongside the score is what
 keeps historical anomalies interpretable across a model swap. A bare score from
