@@ -47,13 +47,13 @@ models:
       use as a baseline; it would make any model look good by comparison.
 
   modernbert-ft:
-    # Local checkpoint, not a Hub repo — from_pretrained loads it as a plain
-    # directory (revision/cache_dir are ignored for local paths). Resolves
-    # from the repo root, so it only works for `uv run` invocations there —
-    # not yet moved into models/cache, so it will NOT resolve inside the
-    # Docker Compose detector container until it is (task 6.6 is still
-    # blocked on this machine having no docker/podman to verify against).
-    repo_id: ml/train/runs/modernbert-ft
+    # Local checkpoint, not a Hub repo. `repo_id` names a directory *inside the
+    # model cache*, which ml/scorer.py resolves against `cache_dir` — so this one
+    # entry works both from `uv run` at the repo root (models/cache/) and inside
+    # the detector container (/models/), where the same directory is mounted at a
+    # different path. It previously named a repo-relative training-output path,
+    # which resolved in exactly one of those two places.
+    repo_id: modernbert-ft
     revision: local
     license: apache-2.0
     role: finetune
@@ -65,6 +65,22 @@ models:
       Trained on a Colab T4; the local GPU (GTX 1060 3GB) is too small for a
       full fine-tune. id2label is set explicitly during training, so the
       anomaly index resolves automatically — no anomaly_index override needed.
+
+  modernbert-ft-v2:
+    # Same local-checkpoint convention as modernbert-ft: a directory name inside
+    # the model cache, resolved by ml/scorer.py against cache_dir.
+    repo_id: modernbert-ft-v2
+    revision: local
+    license: internal
+    role: finetune
+    task: text-classification
+    notes: >-
+      Fine-tune of modernbert-base on ml/data/build-local (manifest
+      80fa3ec5fdfb14c7…), the CC0/Apache-2.0 nginx + Windows Event Log corpus.
+      Trained to replace modernbert-ft, which was trained on LogHub BGL — a
+      corpus whose own terms say "research or academic work" and which
+      transferred badly: 21.5% flagged on systemd journal, 99.0% on real nginx.
+      2 epochs, class weights, full fine-tune on a T4.
 
   modernbert-base:
     repo_id: answerdotai/ModernBERT-base

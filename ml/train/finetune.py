@@ -34,14 +34,26 @@ BASE_MODEL_KEY = "modernbert-base"
 
 
 def load_jsonl(path: Path, limit: int | None = None) -> list[dict]:
+    """Read a split, striding rather than head-slicing when a limit applies.
+
+    A split holds one corpus after another, so taking the first N records takes
+    one corpus. Observed: `--train-limit 20000` on a 3.29%-anomaly split yielded
+    31 anomalies (0.15%) and a class weight of 322, because the head of the file
+    is all nginx from the quiet start of the capture. The same trap applies to
+    `--eval-limit`, and there it is worse than a misleading smoke run —
+    `metric_for_best_model="f1"` would pick the best checkpoint using a
+    validation subset that is missing most of one corpus.
+    """
     if not path.exists():
         raise FileNotFoundError(f"Missing {path}. Run: python ml/data/prepare.py")
-    records = []
     with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            records.append(json.loads(line))
-            if limit and len(records) >= limit:
-                break
+        records = [json.loads(line) for line in handle]
+    if limit and len(records) > limit:
+        # Evenly spaced across the whole file. An integer stride plus a trailing
+        # truncation is not enough: `[::6][:20000]` on 131,938 records drops the
+        # tail, and the tail is a whole corpus.
+        step = len(records) / limit
+        records = [records[int(index * step)] for index in range(limit)]
     return records
 
 
@@ -193,6 +205,14 @@ def main() -> int:
             return (loss, outputs) if return_outputs else loss
 
     args.out.mkdir(parents=True, exist_ok=True)
+    # Compute capability, not torch.cuda.is_bf16_supported(). That call returns
+    # True on a T4 (cc 7.5) because it counts *emulated* bf16, which is exactly
+    # the slow path this check exists to avoid — the GPU then warns "does not
+    # support bfloat16 compilation natively, skipping" and falls back to fp32.
+    # Hardware bf16 starts at Ampere, cc 8.0.
+    bf16_ok = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+    if torch.cuda.is_available():
+        print(f"precision  : {'bf16' if bf16_ok else 'fp16'} on {torch.cuda.get_device_name(0)}")
     training_arguments = TrainingArguments(
         output_dir=str(args.out / "checkpoints"),
         num_train_epochs=args.epochs,
@@ -209,7 +229,13 @@ def main() -> int:
         greater_is_better=True,
         logging_steps=50,
         save_total_limit=2,
-        bf16=torch.cuda.is_available(),
+        # bf16 needs Ampere (cc 8.0+). A T4 is Turing: asking for bf16 there
+        # gets no mixed precision at all — torch warns "does not support
+        # bfloat16 compilation natively, skipping" and falls back to fp32,
+        # roughly halving throughput on the exact GPU a free Colab session
+        # gives you. fp16 is what Turing has tensor cores for.
+        bf16=bf16_ok,
+        fp16=torch.cuda.is_available() and not bf16_ok,
         report_to=[],
     )
 

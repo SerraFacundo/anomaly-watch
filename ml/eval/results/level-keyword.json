@@ -1,31 +1,31 @@
 {
   "dataset": {
-    "evaluated_records": 43419,
+    "evaluated_records": 55012,
     "full_split": true,
     "limit": null,
-    "manifest_sha256": "61850cb40f50bbf9f1fde88425fe6e1107ef830e3024a39f45dcdc3f7902844d",
-    "repo": "bolu61/loghub_2",
-    "revision": "4a98d3eb30522891b340609d17fa34709a1d44d2",
-    "test_sha256": "3d0b5d8f2398bc2ed4ffa58f65691cf9f68f2b5930ab32443d8afe523678b718"
+    "manifest_sha256": "e9de7cc79ed3312bb5760fa9e5ae7742edaeaf0a1de107385abd7d94a24ee657",
+    "repo": null,
+    "revision": null,
+    "test_sha256": "90ef4eb53f8cdfdad541743b33c7eed882381f36c9f8030a2ee24ffc8d564a62"
   },
   "environment": {
-    "platform": "Linux-7.1.4-200.fc44.x86_64-x86_64-with-glibc2.39",
+    "platform": "Linux-7.1.8-200.fc44.x86_64-x86_64-with-glibc2.39",
     "processor": "x86_64",
     "python": "3.12.3"
   },
-  "evaluated_at": "2026-08-24T23:34:11.904231+00:00",
+  "evaluated_at": "2026-09-09T23:55:19.418959+00:00",
   "kind": "baseline",
   "latency": {
     "note": "not comparable to transformer latency; CPU-cheap by construction"
   },
   "metrics": {
-    "actual_anomaly_rate": 0.0664,
-    "f1": 0.253,
-    "pr_auc": 0.1381,
-    "precision": 0.1476,
-    "predicted_anomaly_rate": 0.397,
-    "recall": 0.8831,
-    "roc_auc": 0.7603,
+    "actual_anomaly_rate": 0.0493,
+    "f1": 0.6102,
+    "pr_auc": 0.4189,
+    "precision": 0.7968,
+    "predicted_anomaly_rate": 0.0306,
+    "recall": 0.4945,
+    "roc_auc": 0.744,
     "threshold": 0.5
   },
   "model": {
@@ -35,5 +35,5 @@
   },
   "model_size_mb": 0.0,
   "name": "level-keyword",
-  "throughput_records_per_s": 190745.3
+  "throughput_records_per_s": 60296.1
 }

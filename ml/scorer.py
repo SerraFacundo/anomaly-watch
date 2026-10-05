@@ -69,6 +69,7 @@ class LogScorer:
         num_threads: int | None = None,
         anomaly_index_override: int | None = None,
         offline: bool = True,
+        device: str | None = None,
     ) -> None:
         import torch
         from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
@@ -84,8 +85,18 @@ class LogScorer:
             torch.set_num_threads(num_threads)
 
         revision = pin.require_revision()
+
+        # A locally-trained checkpoint lives in the cache directory alongside the
+        # Hub downloads, and is named by directory rather than by `org/name`.
+        # Resolving it against `cache_dir` is what lets one registry entry work
+        # both from a `uv run` at the repo root and inside the container, where
+        # the same directory is mounted at a different path. Without this the
+        # entry has to name a path that is correct in exactly one of the two.
+        local_checkpoint = Path(cache_dir) / pin.repo_id
+        source = str(local_checkpoint) if local_checkpoint.is_dir() else pin.repo_id
+
         load_kwargs = {
-            "pretrained_model_name_or_path": pin.repo_id,
+            "pretrained_model_name_or_path": source,
             "revision": revision,
             "cache_dir": str(cache_dir),
             "local_files_only": offline,
@@ -103,6 +114,14 @@ class LogScorer:
             ) from exc
 
         self.model.eval()
+        # Default "cpu", not auto-detected: detector-service must score on the
+        # exact hardware it was measured on (a PyME host has no GPU), so a
+        # caller that says nothing gets exactly today's behavior. Only the eval
+        # harness passes an explicit device, to use a GPU when one is sitting
+        # idle underneath it — running a comparison run's inference on CPU
+        # while a GPU goes unused was the actual bottleneck on a Colab session.
+        self.device = device or "cpu"
+        self.model.to(self.device)
         # Precedence: caller override > registry pin > checkpoint id2label > fallback.
         self.anomaly_index, self.anomaly_index_reason = resolve_anomaly_index(
             getattr(config, "id2label", None),
@@ -127,6 +146,7 @@ class LogScorer:
             max_length=self.max_length,
             return_tensors="pt",
         )
+        batch = {name: tensor.to(self.device) for name, tensor in batch.items()}
         with torch.inference_mode():
             logits = self.model(**batch).logits
             probabilities = torch.softmax(logits, dim=-1)[:, self.anomaly_index]

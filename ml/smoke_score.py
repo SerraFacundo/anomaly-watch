@@ -7,6 +7,7 @@ the checkpoint is not usable and no amount of pipeline work will fix that.
 Usage:
     python ml/smoke_score.py
     python ml/smoke_score.py --model baseline-roberta
+    python ml/smoke_score.py --checkpoint /content/drive/MyDrive/modernbert-ft-v3 --name v3
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from registry import DEFAULT_CACHE_DIR, get_pin  # noqa: E402
+from registry import DEFAULT_CACHE_DIR, ModelPin, get_pin  # noqa: E402
 from scorer import LogScorer  # noqa: E402
 
 # Hand-written, deliberately obvious. Expectation is directional, not a test
@@ -37,12 +38,28 @@ SAMPLES: list[tuple[str, str]] = [
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default=None, help="registry key (default: registry 'default')")
+    parser.add_argument("--checkpoint", type=Path, default=None,
+                        help="local fine-tuned checkpoint dir, bypassing the registry — "
+                             "for a candidate that hasn't been registered/promoted yet")
+    parser.add_argument("--name", default=None, help="label for --checkpoint (default: dir name)")
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--online", action="store_true", help="allow a Hub fetch if the cache is cold")
     args = parser.parse_args()
 
-    pin = get_pin(args.model)
+    if args.checkpoint:
+        # Same escape hatch ml/eval/harness.py already has, and for the same
+        # reason: eyeballing a checkpoint's behavior is exactly the check you
+        # want to run *before* deciding it's worth registering or promoting.
+        pin = ModelPin(
+            key=args.name or args.checkpoint.name,
+            repo_id=str(args.checkpoint),
+            revision="local",
+            license="internal",
+            role="finetuned",
+        )
+    else:
+        pin = get_pin(args.model)
     scorer = LogScorer(pin, cache_dir=args.cache_dir, threshold=args.threshold, offline=not args.online)
 
     meta = scorer.metadata()
