@@ -80,7 +80,24 @@ models:
       Trained to replace modernbert-ft, which was trained on LogHub BGL — a
       corpus whose own terms say "research or academic work" and which
       transferred badly: 21.5% flagged on systemd journal, 99.0% on real nginx.
-      2 epochs, class weights, full fine-tune on a T4.
+      2 epochs, class weights, full fine-tune on a T4. Checkpoint lost — no
+      longer in Drive or on the dev machine, so it can never be evaluated on the
+      v3 split. Kept for the record; not a promotion incumbent.
+
+  modernbert-ft-v3:
+    # Same local-checkpoint convention as modernbert-ft: a directory name inside
+    # the model cache, resolved by ml/scorer.py against cache_dir.
+    repo_id: modernbert-ft-v3
+    revision: local
+    license: internal
+    role: finetune
+    task: text-classification
+    notes: >-
+      Fine-tune of modernbert-base on ml/data/build-local (manifest
+      e9de7cc79ed3…): nginx (CC0), Windows Event Log (Apache-2.0 + CC0) and the
+      Zenodo web server logs. F1 0.986, PR-AUC 0.999 on the v3 test split
+      (ml/eval/results/PROGRESS-v3.md). Trained on a Colab T4; promotion is run
+      there too, by ml/train/colab_promote.ipynb.
 
   modernbert-base:
     repo_id: answerdotai/ModernBERT-base

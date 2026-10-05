@@ -88,8 +88,16 @@ def percentile(values: list[float], fraction: float) -> float:
     return round(ordered[index], 3)
 
 
-def measure_latency(scorer, messages: list[str], rounds: int = 30) -> dict:
-    """p95 for a single record and for a batch of 32, measured on this CPU."""
+def measure_latency(scorer, messages: list[str], rounds: int = 30, device: str = "cpu") -> dict:
+    """p95 for a single record and for a batch of 32, measured on `device`.
+
+    CPU by default even when scoring ran on a GPU: the promotion gate's budget is
+    for detector-service, which scores on CPU. A p95 taken on a T4 would pass
+    that budget for any model and say nothing about the deployed stack.
+    """
+    if scorer.device != device:
+        scorer.model.to(device)
+        scorer.device = device
     sample = messages[: max(rounds, 32)] or ["placeholder"]
 
     scorer.score(sample[:2])  # warm the graph so the first call is not counted
@@ -113,6 +121,7 @@ def measure_latency(scorer, messages: list[str], rounds: int = 30) -> dict:
         "p95_batch32_ms": percentile(batched, 0.95),
         "p50_batch32_ms": percentile(batched, 0.50),
         "rounds": rounds,
+        "device": device,
     }
 
 
@@ -138,6 +147,7 @@ def evaluate_model(
     model_key: str | None = None,
     batch_size: int = 64,
     device: str | None = None,
+    latency_device: str = "cpu",
 ) -> dict:
     from scorer import LogScorer
 
@@ -180,7 +190,7 @@ def evaluate_model(
             "anomaly_index_reason": metadata["anomaly_index_reason"],
         },
         "metrics": compute_metrics(labels, scores, threshold),
-        "latency": measure_latency(scorer, messages),
+        "latency": measure_latency(scorer, messages, device=latency_device),
         "throughput_records_per_s": round(len(messages) / total_seconds, 1) if total_seconds else None,
         "model_size_mb": directory_size_mb(model_dir) if model_dir else None,
     }
@@ -281,13 +291,16 @@ def main() -> int:
                         help="cpu/cuda for scoring. Default: cuda if available, else cpu. The harness is "
                              "eval-only and never runs in the deployed detector, so using an idle GPU here "
                              "is always a win — unlike detector-service, which must match production hardware")
+    parser.add_argument("--latency-device", default="cpu",
+                        help="device for the latency measurement the promotion gate reads. Default cpu, "
+                             "whatever --device is, because the gate's budget is for detector-service")
     args = parser.parse_args()
 
     device = args.device
     if device is None:
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"device     : {device}")
+    print(f"device     : {device} (latency on {args.latency_device})")
 
     manifest = load_manifest(args.data_dir)
     test_records = load_split("test", args.data_dir, args.limit)
@@ -319,7 +332,7 @@ def main() -> int:
         print(f"\n=== model: {key} ===")
         try:
             result = evaluate_model(key, test_records, train_records, args.threshold, args.cache_dir,
-                                    model_key=key, device=device)
+                                    model_key=key, device=device, latency_device=args.latency_device)
         except Exception as exc:  # noqa: BLE001
             print(f"  ! skipped: {exc}")
             continue
@@ -330,7 +343,8 @@ def main() -> int:
         name = args.name or args.checkpoint.name
         print(f"\n=== checkpoint: {name} ===")
         result = evaluate_model(name, test_records, train_records, args.threshold, args.cache_dir,
-                                checkpoint=args.checkpoint, device=device)
+                                checkpoint=args.checkpoint, device=device,
+                                latency_device=args.latency_device)
         write_result(result, manifest, args.results_dir, len(test_records), args.limit)
         results.append(result)
 
