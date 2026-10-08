@@ -14,6 +14,13 @@
 #   deferred  — researched, deliberately not adopted. Kept so the decision is
 #               visible instead of being rediscovered later.
 
+# Promoted by explicit user decision, overriding the latency check of
+# ml/promote.py. Colab gate run: F1 0.986 vs incumbent 0.005 and floors
+# 0.610 / 0.129, all on the v3 split (ml/eval/results/modernbert-ft-v3.json).
+# Rejected only on p95/32 = 27,196 ms against a 2,000 ms budget — but v1, same
+# modernbert-base architecture, measured 27,109 ms in that same run and 389 ms
+# on the dev machine. A 70x slowdown on both is the Colab CPU, not the model.
+# Re-measure on the demo host with tools/detector_latency.py.
 default: modernbert-ft-v3
 
 models:
