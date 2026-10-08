@@ -14,7 +14,7 @@
 #   deferred  — researched, deliberately not adopted. Kept so the decision is
 #               visible instead of being rediscovered later.
 
-default: modernbert-ft
+default: modernbert-ft-v3
 
 models:
   baseline-bert:
