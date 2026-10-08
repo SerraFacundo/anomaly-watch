@@ -12,7 +12,7 @@ here from the first record rather than added once it hurts.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # major.minor.
 #   major — breaking. Field removed, renamed, or its meaning changed. Rejected
@@ -100,6 +100,15 @@ class IngestRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     records: list[WireRecord] = Field(min_length=1, max_length=MAX_BATCH_RECORDS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bare_array(cls, data: object) -> object:
+        # FluentBit's out_http with `Format json` posts a bare JSON array, not
+        # {"records": [...]}. Without this every real agent batch is a 422,
+        # which out_http retries forever — the agent looks healthy and nothing
+        # ever arrives.
+        return {"records": data} if isinstance(data, list) else data
 
 
 class RecordProblem(BaseModel):
