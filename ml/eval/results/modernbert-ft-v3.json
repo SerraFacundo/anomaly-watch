@@ -1,0 +1,46 @@
+{
+  "dataset": {
+    "evaluated_records": 55012,
+    "full_split": true,
+    "limit": null,
+    "manifest_sha256": "e9de7cc79ed3312bb5760fa9e5ae7742edaeaf0a1de107385abd7d94a24ee657",
+    "repo": null,
+    "revision": null,
+    "test_sha256": "90ef4eb53f8cdfdad541743b33c7eed882381f36c9f8030a2ee24ffc8d564a62"
+  },
+  "environment": {
+    "platform": "Linux-6.6.122+-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.13.15"
+  },
+  "evaluated_at": "2026-10-08T20:41:20.304736+00:00",
+  "kind": "transformer",
+  "latency": {
+    "device": "cpu",
+    "p50_batch32_ms": 26852.837,
+    "p50_single_ms": 488.89,
+    "p95_batch32_ms": 27195.616,
+    "p95_single_ms": 1006.56,
+    "rounds": 30
+  },
+  "metrics": {
+    "actual_anomaly_rate": 0.0493,
+    "f1": 0.986,
+    "pr_auc": 0.9991,
+    "precision": 0.9828,
+    "predicted_anomaly_rate": 0.0496,
+    "recall": 0.9893,
+    "roc_auc": 0.9999,
+    "threshold": 0.5
+  },
+  "model": {
+    "anomaly_index": 1,
+    "anomaly_index_reason": "matched label 'Anomaly'",
+    "license": "internal",
+    "repo_id": "/content/drive/MyDrive/modernbert-ft-v3",
+    "revision": "local"
+  },
+  "model_size_mb": 4200.3,
+  "name": "modernbert-ft-v3",
+  "throughput_records_per_s": 49.6
+}

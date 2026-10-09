@@ -134,6 +134,12 @@ def main() -> int:
             "agent id stamped by the service", contents[0].get("agent_id") == "web1-stub"
         )
         failures += not check("no partial .tmp files left", not list(spool_dir.glob("*.tmp")))
+        # What FluentBit's out_http actually sends with `Format json`.
+        response = client.post("/ingest", json=[record("a"), record("b")], headers=auth)
+        failures += not check(
+            "bare FluentBit array accepted", response.status_code == 202 and response.json().get("accepted") == 2,
+            f"{response.status_code} {response.text[:120]}",
+        )
 
         print("\n4. validation detail")
         response = client.post(
