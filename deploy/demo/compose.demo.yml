@@ -1,0 +1,45 @@
+# Local multi-node demo: three FluentBit agents and a traffic generator on top
+# of the main stack, all on one machine. Use through deploy/demo/demo.sh, which
+# creates the certificate and the agent tokens this file expects.
+
+x-agent: &agent
+  image: docker.io/fluent/fluent-bit:3.2
+  volumes:
+    - ./deploy/demo/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+    - ./deploy/nginx/certs/server.crt:/certs/server.crt:ro
+    - demo-logs:/logs:ro
+    # One volume, one subdirectory per node: the disk buffer outlives the
+    # container, which is what the ingest-outage part of the demo shows.
+    - agent-buffers:/buffer
+  networks: [anomaly-watch]
+  depends_on: [nginx, loggen]
+
+services:
+  nginx:
+    networks:
+      anomaly-watch:
+        aliases: [anomaly-watch.local]
+
+  loggen:
+    image: docker.io/library/python:3.12-slim
+    command: ["python", "-u", "/loggen.py", "run"]
+    volumes:
+      - ./deploy/demo/loggen.py:/loggen.py:ro
+      - demo-logs:/logs
+    network_mode: none
+
+  agent-web1:
+    <<: *agent
+    environment: {NODE: web1, AGENT_TOKEN: "${TOKEN_WEB1:?run deploy/demo/demo.sh up}"}
+
+  agent-web2:
+    <<: *agent
+    environment: {NODE: web2, AGENT_TOKEN: "${TOKEN_WEB2:?run deploy/demo/demo.sh up}"}
+
+  agent-auth1:
+    <<: *agent
+    environment: {NODE: auth1, AGENT_TOKEN: "${TOKEN_AUTH1:?run deploy/demo/demo.sh up}"}
+
+volumes:
+  demo-logs:
+  agent-buffers:

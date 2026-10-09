@@ -129,7 +129,8 @@
 
 - [x] 9.4 Package as a systemd unit with a documented install procedure — `anomaly-watch-agent.service` (unprivileged user, `StateDirectory`, `ProtectSystem=strict`), `tools/render_agent_config.py`, and `deploy/fluentbit/README.md`. The renderer refuses to write a config with an unsubstituted placeholder and chmods to 0600, because a config holding a bearer token that authenticates as the literal string `@@AGENT_TOKEN@@` fails in a way nobody notices until the host has been silent for a week. Verified end to end: rendered config has zero placeholders left and mode 600
 - [ ] 9.5 Test the buffering guarantee end to end — **still open, but not for the reason first recorded.** The stack does run (see 3.6); what has not been exercised is a real FluentBit process with a real filesystem buffer, because no agent has been installed on a host yet. The *stack* side of the guarantee is verified: `ingest-service` acknowledges only after fsync+rename, and the collector replays an unprocessed batch rather than losing it. What is untested is FluentBit's own retention across a stack outage
-- [ ] 9.6 Test the buffer limit past 512MB — open with 9.5, needs a real agent
+- [ ] 9.6 Test the buffer limit past 512MB — open with 9.5, needs a real agent. Note for whoever runs it: `storage.total_limit_size` was under `[SERVICE]` in the template, where FluentBit ignores it, so the buffer was in fact unbounded. Moved to `[OUTPUT]`, where it belongs
+- [ ] 9.7 Local multi-node demo — `deploy/demo/` (overlay `compose.demo.yml`, `demo.sh`, `loggen.py`, guion in `README.md`): three real FluentBit agents (`web1`, `web2`, `auth1`) tailing generated nginx/sshd logs, TLS against the self-signed cert via `tls.ca_file`, one token each from `tools/agent_token.py`. Written and statically checked (`compose config`, lint, generator output); **not yet run** — the cloud session cannot pull images. Running it closes most of 9.5 and 10.1 on one machine
 
 ## 10. Pilot on one host
 
