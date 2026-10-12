@@ -17,9 +17,10 @@ ataque.
 
 ## Antes de empezar
 
-- Pesos de v3 en `models/cache/modernbert-ft-v3/` (`config.json`,
-  `model.safetensors`, `tokenizer.json`, `tokenizer_config.json`,
-  `special_tokens_map.json`). Están en `MyDrive/modernbert-ft-v3/`.
+- Pesos de v3: `demo.sh up` los baja solo a `models/cache/modernbert-ft-v3/`
+  desde el repo privado de Hugging Face `fsaecr/modernbert-ft` (otro repo:
+  `MODEL_REPO=usuario/repo`). Necesita `uv` y un token de lectura de HF:
+  `export HF_TOKEN=hf_...` o `uvx --from huggingface_hub hf auth login` una vez.
 - Podman rootless: nginx publica el 443, así que hace falta
   `sudo sysctl net.ipv4.ip_unprivileged_port_start=80`.
 - Fedora o RHEL: `chcon -Rt container_file_t models/cache`.

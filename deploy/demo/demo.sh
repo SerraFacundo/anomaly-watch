@@ -32,8 +32,13 @@ up() {
 
   model=${DETECTOR_MODEL_KEY:-modernbert-ft-v3}
   if [ ! -f "models/cache/$model/model.safetensors" ]; then
-    echo "Missing weights in models/cache/$model/ (see the handoff: MyDrive/modernbert-ft-v3/)." >&2
-    exit 1
+    # Private Hub repo, so HF_TOKEN must be set (or `hf auth login` done once).
+    # ponytail: tracks the repo's main branch; pin with --revision <sha> if it ever changes.
+    MODEL_REPO=${MODEL_REPO:-fsaecr/modernbert-ft}
+    echo "Weights missing; downloading $MODEL_REPO into models/cache/$model/"
+    uvx --from huggingface_hub hf download "$MODEL_REPO" --local-dir "models/cache/$model" \
+      --exclude ".gitattributes" --exclude "checkpoints/*" --exclude "*.bin" --exclude "*.pt"
+    [ -f "models/cache/$model/model.safetensors" ] || { echo "Download did not produce model.safetensors" >&2; exit 1; }
   fi
 
   if [ ! -f "$TOKENS" ]; then
