@@ -15,12 +15,18 @@ guarda en disco (`storage.type filesystem`) y envía por TLS con su propio token
 El generador escribe tráfico normal de nginx y sshd, y bajo pedido inyecta un
 ataque.
 
+Los números medidos en la primera corrida real, y los cuatro defectos que esa
+corrida encontró, están en [RUN-RECORD.md](RUN-RECORD.md).
+
 ## Antes de empezar
 
 - Pesos de v3: `demo.sh up` los baja solo a `models/cache/modernbert-ft-v3/`
-  desde el repo privado de Hugging Face `fsaecr/modernbert-ft` (otro repo:
-  `MODEL_REPO=usuario/repo`). Necesita `uv` y un token de lectura de HF:
+  desde el repo privado de Hugging Face `fsaecr/modernbert-ft-v3`, fijado al
+  commit `e1d3703d` (otro repo o revisión: `MODEL_REPO=usuario/repo`,
+  `MODEL_REVISION=<sha>`). Necesita `uv` y un token de lectura de HF:
   `export HF_TOKEN=hf_...` o `uvx --from huggingface_hub hf auth login` una vez.
+  Son 575 MB: `config.json`, `model.safetensors`, `tokenizer.json`,
+  `tokenizer_config.json`, `special_tokens_map.json` y `run_metadata.json`.
 - Podman rootless: nginx publica el 443, así que hace falta
   `sudo sysctl net.ipv4.ip_unprivileged_port_start=80`. Fedora 41 y posteriores
   ya vienen con ese valor; comprobalo con

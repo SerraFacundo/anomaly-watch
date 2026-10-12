@@ -33,10 +33,18 @@ up() {
   model=${DETECTOR_MODEL_KEY:-modernbert-ft-v3}
   if [ ! -f "models/cache/$model/model.safetensors" ]; then
     # Private Hub repo, so HF_TOKEN must be set (or `hf auth login` done once).
-    # ponytail: tracks the repo's main branch; pin with --revision <sha> if it ever changes.
-    MODEL_REPO=${MODEL_REPO:-fsaecr/modernbert-ft}
+    #
+    # `-v3`, not `fsaecr/modernbert-ft`: that repo exists but holds one file and
+    # no model.safetensors, so this download reached the guard below instead of
+    # the weights. v3 went to its own repo rather than a branch of that one.
+    MODEL_REPO=${MODEL_REPO:-fsaecr/modernbert-ft-v3}
+    # Pinned, for the reason ml/models.yaml gives at the top of the file: a
+    # branch moves, and a moved branch means the weights you evaluated are not
+    # the weights you deployed.
+    MODEL_REVISION=${MODEL_REVISION:-e1d3703d90af061aae46c40d4d01425679a6e7b2}
     echo "Weights missing; downloading $MODEL_REPO into models/cache/$model/"
-    uvx --from huggingface_hub hf download "$MODEL_REPO" --local-dir "models/cache/$model" \
+    uvx --from huggingface_hub hf download "$MODEL_REPO" --revision "$MODEL_REVISION" \
+      --local-dir "models/cache/$model" \
       --exclude ".gitattributes" --exclude "checkpoints/*" --exclude "*.bin" --exclude "*.pt"
     [ -f "models/cache/$model/model.safetensors" ] || { echo "Download did not produce model.safetensors" >&2; exit 1; }
   fi
