@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 from dataclasses import replace
@@ -112,8 +113,19 @@ def main() -> int:
     # and treating it as one made 12.65% of real nginx traffic skip the cache.
     failures += not check("response size 567 does NOT bypass",
                           not needs_bypass('1.2.3.4 - - "GET /x HTTP/1.1" 200 567 "-" "Mozilla"'))
-    failures += not check("404 with 512-byte body does NOT bypass",
-                          not needs_bypass('1.2.3.4 - - "GET /x HTTP/1.1" 404 512 "-" "Mozilla"'))
+    # A 512-byte body next to a 4xx status still must not read as a 5xx: the size
+    # is not anchored to the quote, so only the 4xx pattern may claim this line.
+    failures += not check("404 with 512-byte body bypasses as 4xx, not as 5xx",
+                          needs_bypass('1.2.3.4 - - "GET /x HTTP/1.1" 404 512 "-" "Mozilla"')
+                          and not re.search(r'"\s+5\d{2}\b', '1.2.3.4 - - "GET /x HTTP/1.1" 404 512 "-" "Mozilla"'))
+    # Why 4xx bypasses at all: in combined log format Drain3 masks the path and
+    # the status, so a probe clusters with ordinary traffic and the cache answers
+    # it with ordinary traffic's score. Measured on deploy/demo before this rule:
+    # 40 injected scan lines, 0 scored, 0 flagged.
+    failures += not check("path traversal probe bypasses",
+                          needs_bypass('203.0.113.7 - - "GET /../../../../etc/passwd HTTP/1.1" 403 512 "-" "sqlmap/1.8"'))
+    failures += not check("routine 200 still does NOT bypass",
+                          not needs_bypass('1.2.3.4 - - "GET /products HTTP/1.1" 200 4007 "-" "Mozilla"'))
     failures += not check("non-zero exit bypasses", needs_bypass("process terminated with exit code 137"))
     failures += not check("kernel panic bypasses", needs_bypass("Kernel panic - not syncing"))
     failures += not check("routine line does not bypass", not needs_bypass("Served request id=7 in 12ms"))

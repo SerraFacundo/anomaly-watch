@@ -47,7 +47,9 @@ up() {
     until $COMPOSE exec -T postgres pg_isready -U anomaly -d anomaly_watch >/dev/null 2>&1; do sleep 2; done
     tmp=$(mktemp)
     for node in $NODES; do
-      token=$($COMPOSE run --rm -v "$PWD/tools:/app/tools:ro" ingest \
+      # `z` relabels the mount for SELinux. Without it an enforcing host denies
+      # container_t reading user_home_t and python exits with Errno 13.
+      token=$($COMPOSE run --rm -v "$PWD/tools:/app/tools:ro,z" ingest \
         python tools/agent_token.py --dsn "$DSN" issue --host "$node" | awk '/^token/ {print $3}')
       [ -n "$token" ] || { echo "Could not issue a token for $node" >&2; rm -f "$tmp"; exit 1; }
       echo "TOKEN_${node^^}=$token" >> "$tmp"

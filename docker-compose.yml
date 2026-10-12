@@ -48,8 +48,8 @@ services:
       ANOMALY_WATCH_MODEL_CACHE: /models
     volumes:
       # Read-only: the service loads weights, it never writes them.
-      - ./models/cache:/models:ro
-      - ./ml/eval/results:/app/ml/eval/results:ro
+      - ./models/cache:/models:ro,z
+      - ./ml/eval/results:/app/ml/eval/results:ro,z
     # Declared here as well as in the Dockerfile: podman-compose does not
     # propagate image-level HEALTHCHECK, so a `condition: service_healthy`
     # dependant would wait forever on a container that never reports health.
@@ -133,14 +133,21 @@ services:
   nginx:
     image: docker.io/nginx:alpine
     volumes:
-      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro,z
+      - ./deploy/nginx/20-resolver-from-resolv-conf.sh:/docker-entrypoint.d/20-resolver-from-resolv-conf.sh:ro,z
     # The only host-exposed service in the stack. Everything else is reachable
     # only from the internal network.
     ports:
       - "443:443"
       - "80:80"
-    networks: [anomaly-watch]
+    # Mapping form, not the `[anomaly-watch]` list the other services use:
+    # deploy/demo/compose.demo.yml overrides this key to add a network alias,
+    # and podman-compose 1.6.0 merges overlays by type — a list here against a
+    # mapping there aborts with "can't merge value of [networks]". Docker
+    # Compose normalises both to the mapping form, so it never noticed.
+    networks:
+      anomaly-watch: {}
     depends_on:
       - ingest
 

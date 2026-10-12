@@ -5,8 +5,8 @@
 x-agent: &agent
   image: docker.io/fluent/fluent-bit:3.2
   volumes:
-    - ./deploy/demo/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
-    - ./deploy/nginx/certs/server.crt:/certs/server.crt:ro
+    - ./deploy/demo/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro,z
+    - ./deploy/nginx/certs/server.crt:/certs/server.crt:ro,z
     - demo-logs:/logs:ro
     # One volume, one subdirectory per node: the disk buffer outlives the
     # container, which is what the ingest-outage part of the demo shows.
@@ -24,7 +24,7 @@ services:
     image: docker.io/library/python:3.12-slim
     command: ["python", "-u", "/loggen.py", "run"]
     volumes:
-      - ./deploy/demo/loggen.py:/loggen.py:ro
+      - ./deploy/demo/loggen.py:/loggen.py:ro,z
       - demo-logs:/logs
     network_mode: none
 

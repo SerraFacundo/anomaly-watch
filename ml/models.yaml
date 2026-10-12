@@ -20,7 +20,19 @@
 # Rejected only on p95/32 = 27,196 ms against a 2,000 ms budget — but v1, same
 # modernbert-base architecture, measured 27,109 ms in that same run and 389 ms
 # on the dev machine. A 70x slowdown on both is the Colab CPU, not the model.
-# Re-measure on the demo host with tools/detector_latency.py.
+#
+# Re-measured on the demo host (tools/detector_latency.py, inside the detector
+# container, DETECTOR_NUM_THREADS=2): p95/32 = 3,106 ms, p50/32 = 2,959 ms,
+# p95 single = 154 ms, p50 single = 110 ms. So the Colab reading was inflated
+# 8.75x and the hypothesis above was right — but the real number still misses
+# the 2,000 ms budget by 1.55x. The promotion stands as a deliberate override,
+# now against a measurement instead of an untrusted one.
+#
+# What makes it serviceable anyway is the cache, not the model: 32 lines in
+# 2,959 ms is 10.8 lines/s of raw inference, and at the measured 98% hit rate
+# that is ~540 lines/s effective, against a 50–200 lines/s peak. Note 10.8/s is
+# 2.7x slower than the 29.6 records/s quoted in services/collector/cache.py,
+# which was measured elsewhere — the headroom math there is that much optimistic.
 default: modernbert-ft-v3
 
 models:
@@ -94,6 +106,15 @@ models:
   modernbert-ft-v3:
     # Same local-checkpoint convention as modernbert-ft: a directory name inside
     # the model cache, resolved by ml/scorer.py against cache_dir.
+    #
+    # The weights are mirrored in the private Hub repo fsaecr/modernbert-ft-v3
+    # at commit e1d3703d90af061aae46c40d4d01425679a6e7b2, so they never have to
+    # be re-trained or re-extracted from a zip. `repo_id` deliberately stays the
+    # cache directory name: pointing it at the Hub repo would make ml/scorer.py
+    # miss the already-extracted models/cache/modernbert-ft-v3/ and would need an
+    # HF token inside the detector container, since the repo is private. To
+    # restore the cache on a fresh machine:
+    #   hf download fsaecr/modernbert-ft-v3 --local-dir models/cache/modernbert-ft-v3
     repo_id: modernbert-ft-v3
     revision: local
     license: internal

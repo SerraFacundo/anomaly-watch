@@ -35,6 +35,13 @@ _BYPASS_PATTERNS = [
     # ~1%. Measured on 30k lines of production e-commerce traffic.
     re.compile(r'"\s+5\d{2}\b'),  # combined log format: "GET / HTTP/1.1" 500 1234
     re.compile(r"\b(status|code|response)\b\W{0,3}5\d{2}\b", re.IGNORECASE),
+    # HTTP 4xx, anchored the same way. Not symmetry for its own sake: in combined
+    # log format every request is the same shape, so Drain3 masks the path and the
+    # status as parameters and clusters `GET /../../../../etc/passwd" 403` with
+    # `GET /products" 200`. Without this the cache answers a probe with the score
+    # of ordinary traffic and the record never reaches the detector at all —
+    # measured on deploy/demo: 40 injected scan lines, 0 scored, 0 flagged.
+    re.compile(r'"\s+4\d{2}\b'),
     re.compile(r"\b5\d{2}\s+(internal server error|service unavailable|bad gateway|gateway time)",
                re.IGNORECASE),
     # Non-zero exit / return codes.
