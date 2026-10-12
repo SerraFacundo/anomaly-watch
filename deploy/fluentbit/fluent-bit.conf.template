@@ -18,10 +18,6 @@
     storage.path              /var/lib/fluent-bit/storage
     storage.sync              normal
     storage.checksum          on
-    # Bounded, so an outage cannot fill the disk of the machine being monitored.
-    # 512MB is roughly 8 hours at 200 lines/s uncompressed — long enough to ride
-    # out a restart or a night, short enough not to threaten the host.
-    storage.total_limit_size  512M
     storage.backlog.mem_limit 64M
 
 # --- inputs ------------------------------------------------------------------
@@ -114,3 +110,10 @@
     # for — close enough in behaviour, and worth knowing before someone tunes
     # INGEST_RETRY_AFTER_S expecting agents to obey it.
     Retry_Limit   False
+
+    # Bounded, so an outage cannot fill the disk of the machine being monitored.
+    # 512MB is roughly 8 hours at 200 lines/s uncompressed — long enough to ride
+    # out a restart or a night, short enough not to threaten the host. This is
+    # an [OUTPUT] property: FluentBit ignores it under [SERVICE], which would
+    # leave the buffer unbounded.
+    storage.total_limit_size 512M
