@@ -147,7 +147,7 @@ tiene el SDK de .NET. El ticket se cierra con el CI en verde.
 
 - [ ] Cerrado
 - **Tipo:** `task` (AFK)
-- **Tomado por:** —
+- **Tomado por:** Claude
 - **Bloqueado por:** —
 
 ### Question
@@ -166,13 +166,25 @@ alertas y topología ficticios. Hay que:
 La resolución registra el procedimiento, el formato del archivo de credenciales y los usuarios con
 los que se entra a la app.
 
+**Escrito, falta validar en la laptop.**
+
+- App (`blauerwolf/Anomaly-Watch`, rama `claude/tender-euler-p7i7zs`, commit `0c7a7eb`): `Seed:Skip`
+  omite seeders por nombre de clase. La demo omite `MonitoredNodesSeeder`, `EventLogsSeeder`,
+  `AlertsSeeder`, `NetworkTopologySeeder` y `CollectorsSeeder`. Quedan los usuarios (entre ellos
+  `admin@anomalywatch.local` / `password123`), los roles, las reglas y los modelos ficticios.
+- `tools/app_setup.py` hace login como admin, reintentando mientras la API arranca. Crea los
+  collectors `collector-<host>` y los nodos `<host>`, y registra el modelo `modernbert-ft-v3`.
+  Escribe `deploy/demo/app-credentials.env` (`COLLECTOR_<HOST>=<code>:<token>`, modo 600). Es
+  idempotente y rota la credencial de un collector que existe pero no figura en el archivo.
+  Probado contra una API falsa.
+
 ---
 
 ## 4. Puente del pipeline a la app
 
 - [ ] Cerrado
 - **Tipo:** `task` (AFK)
-- **Tomado por:** —
+- **Tomado por:** Claude
 - **Bloqueado por:** 3
 
 ### Question
@@ -191,13 +203,29 @@ Si la app está caída, reintenta sin frenar el pipeline. En la resolución: qu�
 agrupadas (`occurrences`), qué hace con los rechazos `UNKNOWN_HOST`, y un smoke test al estilo de
 `tools/smoke_ingest.py`.
 
+**Escrito, falta validar en la laptop.** `services/bridge/bridge.py` es un servicio `bridge` en
+`compose.demo.yml`: corre en la imagen de ingest, que ya trae psycopg, y está conectado a la red del
+pipeline y a la de la app (`aw-app_default`).
+
+- **Filas agrupadas:** se mandan una vez, cuando aparecen. Las ocurrencias que se suman después
+  quedan en el pipeline.
+- **`anomalyId`:** `uuid5` del id de la fila, así un reenvío es `DUPLICATE`. El cursor se guarda en
+  un volumen después de cada lote aceptado.
+- **Rechazos:** un `UNKNOWN_HOST` se loguea y se sigue. Un 400 de lote completo se loguea y se
+  saltea. Con 5xx, 401 o 403 el cursor no avanza y se reintenta.
+- **Revisión `local`** del detector: se reemplaza por `BRIDGE_MODEL_REVISION` (`e1d3703d...`, la
+  que fija `demo.sh`).
+- **Heartbeat** cada 30 s para cada agente con `last_seen` de menos de 120 s.
+
+Probado contra una app falsa y una conexión falsa: cursor, idempotencia, reintento y heartbeats.
+
 ---
 
 ## 5. Flota de 5 nodos y escenarios del generador
 
 - [ ] Cerrado
 - **Tipo:** `task` (AFK)
-- **Tomado por:** —
+- **Tomado por:** Claude
 - **Bloqueado por:** 1
 
 ### Question
@@ -214,13 +242,28 @@ Llevar `deploy/demo/` de 3 nodos a 5:
 Un nodo más es un contenedor FluentBit más y algo de RAM: verificar que la laptop lo aguante junto
 con la app.
 
+**Escrito, falta validar en la laptop.**
+
+- `loggen.py`: 5 nodos. `db1` corre sshd y postgres; `mail1` corre nginx (webmail), sshd y postfix.
+  Postgres, postfix y kernel escriben en `/logs/<nodo>/syslog`, que FluentBit lee con
+  `source syslog`.
+- Fondo: un problema cada 90 a 180 s en cada nodo con problemas, solo con líneas que v3 marca. Así
+  hay como mucho 4 fallos SSH cada 5 minutos, por debajo de la regla de fuerza bruta: el único
+  Critical es el ataque en vivo.
+- `attack <nodo> panic` escribe 5 líneas de kernel medidas.
+- `warmup` escribe, sin SSH, problemas de Postgres en `db1` y sondeos web en `mail1`. Abren
+  alertas Medium de fondo.
+
+Comprobado contra `fleet-scores.md`: toda línea de fondo coincide con una medida como marcada, y
+toda línea de panic con una medida como no marcada.
+
 ---
 
 ## 6. Orquestación: un solo `up` y un solo `reset` para los dos stacks
 
 - [ ] Cerrado
 - **Tipo:** `task` (AFK)
-- **Tomado por:** —
+- **Tomado por:** Claude
 - **Bloqueado por:** 3, 4
 
 ### Question
@@ -236,6 +279,19 @@ frontend) desde un checkout hermano (`APP_DIR`, por defecto `../Anomaly-Watch`):
 `reset` limpia los dos stacks y las credenciales. Hay que contemplar los puertos que ya ocupan
 los dos stacks (443 y 80 del pipeline, 8080 de la API, el del frontend) y las rarezas de
 podman-compose documentadas en `RUN-RECORD.md`.
+
+**Escrito, falta validar en la laptop.** `demo.sh up`:
+
+1. Emite los tokens que falten (también para los nodos nuevos, sin tocar los otros).
+2. Levanta la app como proyecto `aw-app` (`APP_DIR`, por defecto `../Anomaly-Watch`). El nombre
+   propio evita que choque con el proyecto del pipeline, porque los dos directorios se llaman
+   `anomaly-watch` en minúscula.
+3. Corre `migrate`, el seed con `Seed__Skip` y `app_setup.py`.
+4. Levanta el stack del pipeline con el puente.
+5. Corre el precalentamiento.
+
+`down` y `reset` alcanzan a los dos stacks. `reset` borra solo el proyecto `aw-app`, no un stack de
+la app levantado a mano.
 
 ---
 

@@ -245,3 +245,5 @@ ml/data/build-local/
 data/*.zip
 # Agent tokens issued by deploy/demo/demo.sh. Bearer credentials.
 deploy/demo/tokens.env
+# Collector credentials of the web app, written by tools/app_setup.py. Bearer credentials.
+deploy/demo/app-credentials.env

@@ -40,16 +40,19 @@ La sesión en la nube solo tenía acceso a `blauerwolf`, por eso el cambio del b
 | 0 | Destino y alcance | Cerrado |
 | 1 | Medir v3 contra los logs de la flota | Cerrado. Resultados en `fleet-scores.md` |
 | 2 | Backend: el heartbeat del collector pone en línea sus nodos | **En curso: código escrito, sin compilar.** Ver la tarea inmediata |
-| 3 | Setup de la app: base limpia, collectors y nodos | Libre |
-| 4 | Puente del pipeline a la app | Bloqueado por 3 |
-| 5 | Flota de 5 nodos y escenarios del generador | Libre (el 1 ya está cerrado) |
-| 6 | Orquestación: un solo `up` y `reset` | Bloqueado por 3 y 4 |
+| 3 | Setup de la app: base limpia, collectors y nodos | **Escrito, falta validar en la laptop** |
+| 4 | Puente del pipeline a la app | **Escrito, falta validar en la laptop** |
+| 5 | Flota de 5 nodos y escenarios del generador | **Escrito, falta validar en la laptop** |
+| 6 | Orquestación: un solo `up` y `reset` | **Escrito, falta validar en la laptop** |
 | 7 | Guion de 10 minutos | Bloqueado por 5 |
 | 8 | Ensayo general y video | Bloqueado por 2, 6 y 7 |
 
 ## Tarea inmediata: llevar el ticket 2 al repo del equipo
 
-El cambio está en `blauerwolf/Anomaly-Watch`, rama `claude/tender-euler-p7i7zs`, commit `8bdac5f`.
+El cambio está en `blauerwolf/Anomaly-Watch`, rama `claude/tender-euler-p7i7zs`. Son **dos commits**:
+`8bdac5f` (heartbeat → nodos online) y `0c7a7eb` (`Seed:Skip`, que la demo usa para sembrar sin
+datos ficticios). Si ya trajiste la rama antes de `0c7a7eb`, volvé a hacer `fetch` y `merge` o
+`cherry-pick 0c7a7eb`.
 Draft PR de referencia: https://github.com/blauerwolf/Anomaly-Watch/pull/1
 
 1. Traer la rama al clon del equipo:
@@ -93,7 +96,14 @@ Draft PR de referencia: https://github.com/blauerwolf/Anomaly-Watch/pull/1
 Puntos a mirar si el build falla: el constructor nuevo del caso de uso (DI en `Program.cs` ya
 registra `INodeRepository`) y el formato (`dotnet format`).
 
-## Después: tickets libres
+## Después: validar los tickets 3 a 6 con `demo.sh up`
+
+El detalle de lo que se escribió está en cada ticket de `tasks.md`, y los comandos en
+`deploy/demo/README.md`. Lo que no se pudo probar en la nube es todo lo que necesita contenedores:
+que podman-compose acepte el nombre de proyecto `aw-app`, la red externa `aw-app_default` y
+`run --no-deps`, y que el puente llegue a `http://api:8080`.
+
+## Antes (ya hechos, se dejan como referencia)
 
 - **3. Setup de la app.** Arrancar la app con usuarios pero sin los datos ficticios. El seed es
   manual y siembra todo junto (`Application/Seeding/*`, registrados en `Api/Program.cs` ~456). Script

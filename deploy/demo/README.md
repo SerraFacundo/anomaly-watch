@@ -1,7 +1,18 @@
 # Demo local con varios nodos
 
-Tres agentes FluentBit (`web1`, `web2`, `auth1`) mandan logs al stack central,
-todo en una sola máquina. Sirve de respaldo si las VMs no están listas.
+Cinco agentes FluentBit (`web1`, `web2`, `auth1`, `db1`, `mail1`) mandan logs al
+stack central, y la aplicación web del equipo muestra lo que encuentra, todo en
+una sola máquina. `db1` y `mail1` tienen problemas de baja intensidad de fondo;
+los otros tres están sanos.
+
+```
+pipeline (postgres: anomalies, agents) ──bridge──> app: POST /api/v1/pipeline/anomalies
+                                                    app: POST /api/v1/collectors/{code}/heartbeat
+```
+
+El puente (`services/bridge/bridge.py`) es lo que conecta las dos mitades: manda
+cada anomalía nueva a la app, que abre las alertas, y traduce "este agente
+entregó logs" en el heartbeat de su collector, que pone el nodo online.
 
 ```
 loggen ──escribe──> /logs/<nodo>/*.log ──tail──> agent-<nodo> (FluentBit, buffer en disco)
@@ -38,16 +49,39 @@ reetiqueta solo. Sin ella, un host con SELinux en enforcing deniega que
 `container_t` lea `user_home_t` y el proceso del contenedor muere con
 `[Errno 13] Permission denied`.
 
+## La aplicación web
+
+`demo.sh up` también levanta la app desde un checkout hermano (`APP_DIR`, por
+defecto `../Anomaly-Watch`), en la rama que tenga los cambios de la demo: el
+heartbeat que pone los nodos online y `Seed:Skip`. Corre como proyecto `aw-app`,
+aparte de cualquier stack de la app levantado a mano, pero usa los mismos
+puertos (8080, 3000, 5432 y 6379): frenar ese otro stack antes.
+
+- Si la app no tiene `.env`, se crea desde `.env.example`. `PIPELINE_SERVICE_TOKEN`
+  sale de ahí y se le pasa al puente.
+- El seed omite los nodos, logs, alertas y topología ficticios. Usuarios, roles y
+  reglas sí se siembran, incluida la regla "SSH Brute Force" (5 fallos en 5
+  minutos, Critical, T1110), que es la que dispara el ataque en vivo.
+- `tools/app_setup.py` crea un collector y un nodo por host y registra el modelo.
+  Las credenciales de los collectors quedan en `deploy/demo/app-credentials.env`
+  (modo 600, fuera de git).
+- Entrar en http://localhost:3000 con `admin@anomalywatch.local` / `password123`.
+
 ## Comandos
 
 ```bash
-deploy/demo/demo.sh up                  # certificado, tokens y stack completo
-deploy/demo/demo.sh watch               # vista que se refresca cada 3 s
+deploy/demo/demo.sh up                  # certificado, tokens, app y stack completo
+deploy/demo/demo.sh watch               # vista del pipeline que se refresca cada 3 s
 deploy/demo/demo.sh attack web1         # fuerza bruta SSH en web1
 deploy/demo/demo.sh attack web2 web     # SQLi / path traversal en web2
-deploy/demo/demo.sh down                # frena todo, conserva datos y buffers
-deploy/demo/demo.sh reset               # borra volúmenes y tokens
+deploy/demo/demo.sh attack db1 panic    # kernel panic en db1: v3 no lo marca
+deploy/demo/demo.sh warmup              # otra tanda de problemas de fondo en db1 y mail1
+deploy/demo/demo.sh down                # frena los dos stacks, conserva datos y buffers
+deploy/demo/demo.sh reset               # borra volúmenes, tokens y credenciales de los dos
 ```
+
+Los logs del puente dicen qué mandó y qué respondió la app:
+`podman compose -f docker-compose.yml -f deploy/demo/compose.demo.yml logs -f bridge`.
 
 Con Docker en vez de Podman: `COMPOSE="docker compose" deploy/demo/demo.sh up`.
 

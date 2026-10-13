@@ -1,24 +1,60 @@
 #!/usr/bin/env bash
-# Local multi-node demo.
+# Local multi-node demo, integrated with the team's web app.
 #
-#   deploy/demo/demo.sh up                    certificate, tokens, whole stack
-#   deploy/demo/demo.sh watch                 refreshing view of what was found
-#   deploy/demo/demo.sh attack web1 [ssh|web] inject an attack on one node
-#   deploy/demo/demo.sh down                  stop, keep data and agent buffers
-#   deploy/demo/demo.sh reset                 stop and delete everything
+#   deploy/demo/demo.sh up                          certificate, tokens, app, whole stack
+#   deploy/demo/demo.sh watch                       refreshing view of what the pipeline found
+#   deploy/demo/demo.sh attack web1 [ssh|web|panic] inject an attack on one node
+#   deploy/demo/demo.sh warmup                      background problems on db1 and mail1
+#   deploy/demo/demo.sh down                        stop both stacks, keep data and agent buffers
+#   deploy/demo/demo.sh reset                       stop both stacks and delete their data
 #
 # COMPOSE overrides the compose command (default: podman compose).
+# APP_DIR is the checkout of the web app (default: ../Anomaly-Watch, next to this repo).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 COMPOSE=${COMPOSE:-podman compose}
 DEMO="$COMPOSE -f docker-compose.yml -f deploy/demo/compose.demo.yml"
-NODES="web1 web2 auth1"
+NODES="web1 web2 auth1 db1 mail1"
 TOKENS=deploy/demo/tokens.env
+APP_DIR=${APP_DIR:-../Anomaly-Watch}
+APP_CREDS=deploy/demo/app-credentials.env
+# Users, roles, rules and settings, but none of the app's fictitious nodes, logs,
+# alerts or topology: everything on screen comes from this pipeline.
+SEED_SKIP=MonitoredNodesSeeder,EventLogsSeeder,AlertsSeeder,NetworkTopologySeeder,CollectorsSeeder
 CERTS=deploy/nginx/certs
 DSN=postgresql://anomaly:anomaly@postgres:5432/anomaly_watch
 
 if [ -f "$TOKENS" ]; then set -a; . "$TOKENS"; set +a; fi
+
+# Its own project name: both checkouts lowercase to "anomaly-watch", and two
+# compose projects with one name share containers, so a `down` of one would take
+# the other with it.
+app() { (cd "$APP_DIR" && $COMPOSE -p aw-app "$@"); }
+
+app_up() {
+  [ -d "$APP_DIR" ] || { echo "No app checkout at $APP_DIR; set APP_DIR" >&2; exit 1; }
+  if [ ! -f "$APP_DIR/.env" ]; then
+    cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+    echo "Created $APP_DIR/.env from .env.example"
+  fi
+  if grep -q '^DEPLOYMENT_MODE=Showcase' "$APP_DIR/.env"; then
+    echo "DEPLOYMENT_MODE=Showcase turns the app's pipeline endpoint off; use Production" >&2; exit 1
+  fi
+  PIPELINE_SERVICE_TOKEN=$(sed -n 's/^PIPELINE_SERVICE_TOKEN=//p' "$APP_DIR/.env")
+  [ -n "$PIPELINE_SERVICE_TOKEN" ] || { echo "PIPELINE_SERVICE_TOKEN is empty in $APP_DIR/.env" >&2; exit 1; }
+  export PIPELINE_SERVICE_TOKEN
+
+  app build api web
+  app up -d db redis
+  # Explicit steps instead of depends_on conditions, which podman-compose does not
+  # always honour: schema first, then the seed, then the API that serves them.
+  # Both are idempotent, so every `up` runs them.
+  app run --rm --no-deps migrate
+  app run --rm --no-deps -e Seed__Skip="$SEED_SKIP" api seed
+  app up -d api web
+  python3 tools/app_setup.py --api "${APP_API_HOST_URL:-http://localhost:8080}" --out "$APP_CREDS"
+}
 
 up() {
   if [ ! -f "$CERTS/server.crt" ]; then
@@ -49,12 +85,18 @@ up() {
     [ -f "models/cache/$model/model.safetensors" ] || { echo "Download did not produce model.safetensors" >&2; exit 1; }
   fi
 
-  if [ ! -f "$TOKENS" ]; then
+  missing=""
+  for node in $NODES; do
+    grep -q "^TOKEN_${node^^}=" "$TOKENS" 2>/dev/null || missing="$missing $node"
+  done
+  if [ -n "$missing" ]; then
     # Base compose only: the overlay refuses to load until these tokens exist.
+    # Only the nodes without one, so adding a node keeps the others' tokens.
     $COMPOSE up -d postgres
     until $COMPOSE exec -T postgres pg_isready -U anomaly -d anomaly_watch >/dev/null 2>&1; do sleep 2; done
     tmp=$(mktemp)
-    for node in $NODES; do
+    [ -f "$TOKENS" ] && cat "$TOKENS" > "$tmp"
+    for node in $missing; do
       # `z` relabels the mount for SELinux. Without it an enforcing host denies
       # container_t reading user_home_t and python exits with Errno 13.
       token=$($COMPOSE run --rm -v "$PWD/tools:/app/tools:ro,z" ingest \
@@ -67,8 +109,14 @@ up() {
     set -a; . "$TOKENS"; set +a
   fi
 
+  app_up
   $DEMO up -d --build
-  echo "Up. Next: deploy/demo/demo.sh watch"
+  # Precalentamiento: real alerts on db1 and mail1 before anyone looks, through the
+  # real pipeline. The agents read from the head of each file, so this can run
+  # while they are still starting.
+  $DEMO run --rm loggen python -u /loggen.py warmup
+  echo "Up. App: http://localhost:${FRONTEND_PORT:-3000} (admin@anomalywatch.local / password123)"
+  echo "Next: deploy/demo/demo.sh watch, or $COMPOSE -f docker-compose.yml -f deploy/demo/compose.demo.yml logs -f bridge"
 }
 
 watch_() {
@@ -91,7 +139,10 @@ case "${1:-}" in
   up) up ;;
   watch) watch_ ;;
   attack) $DEMO run --rm loggen python -u /loggen.py attack --node "${2:?node}" --kind "${3:-ssh}" ;;
-  down) $DEMO down ;;
-  reset) $DEMO down -v; rm -f "$TOKENS" ;;
+  warmup) $DEMO run --rm loggen python -u /loggen.py warmup ;;
+  down) $DEMO down; app down ;;
+  # Only the demo's own app project (aw-app): an app stack run by hand under its
+  # default name keeps its data.
+  reset) $DEMO down -v; app down -v; rm -f "$TOKENS" "$APP_CREDS" ;;
   *) sed -n '2,10p' "$0"; exit 1 ;;
 esac

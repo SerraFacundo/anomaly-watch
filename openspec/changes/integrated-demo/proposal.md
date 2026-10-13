@@ -35,6 +35,9 @@ anomalías y su evidencia. Se cierra con una corrida ensayada, registrada y con 
   en la laptop con un solo comando; 5 nodos (3 sanos, 2 con problemas); base de la app limpia y
   precalentada por el pipeline real; los nodos se ven online por el heartbeat de su collector; el
   límite del modelo con un kernel panic se muestra en vivo.
+- Reglas: se usa la regla sembrada "SSH Brute Force" de la app (5 fallos en 5 minutos, Critical,
+  T1110). El fondo de SSH se mantiene por debajo de ese umbral, así que el único Critical es el
+  ataque en vivo. Detalle en el ticket 5.
 - [Medir v3 contra los logs de la flota](tasks.md#1-medir-v3-contra-los-logs-de-la-flota): el kernel
   panic, las fallas operativas y el tráfico normal pasan sin marcar; de fondo se usan las 7 líneas
   que v3 sí marca (SSH, login de Postgres, sondeos web). Postfix y `/.git/config` se le escapan.
@@ -44,20 +47,14 @@ anomalías y su evidencia. Se cierra con una corrida ensayada, registrada y con 
 - **Cuándo un nodo pasa a offline.** El collector se considera desconectado tras 5 minutos sin
   heartbeat (`Collector.HeartbeatGracePeriod`). Si el nodo hereda ese plazo, un kernel panic en vivo
   tarda 5 minutos en notarse: la mitad de la demo. Queda decidir si se acorta para la demo, si el
-  nodo deriva su estado al leerlo, o si el guion lo esquiva. Se especifica cuando exista el cambio
-  de backend y se sepa cómo se ve en pantalla.
-- **Reglas de detección.** Qué reglas se cargan (por ejemplo "Failed password" con severidad High)
-  y con qué técnica MITRE, para que la alerta del ataque en vivo destaque sobre las de fondo.
-  Depende de qué marca v3 y del guion.
-- **Agrupamiento.** El pipeline agrupa por plantilla y hora y solo suma `occurrences` a una fila que
-  ya existe. Falta ver si la app necesita enterarse de esas ocurrencias extra o si con la primera
-  fila alcanza para la alerta. Se aclara al construir el puente.
-- **Ficha de los nodos en la app.** Tipo, entorno, IP, sistema operativo y nombre visible de cada
-  uno de los 5 nodos. Es un detalle de presentación y se decide en el guion.
+  nodo deriva su estado al leerlo, o si el guion lo esquiva. Hoy el cambio de backend solo pasa
+  nodos a online: ninguno vuelve a offline. En la demo eso no se nota, porque el kernel panic se
+  simula escribiendo líneas y el agente de `db1` sigue entregando, pero el guion tiene que
+  decirlo.
+- **Ficha de los nodos en la app.** `tools/app_setup.py` les pone tipo, entorno, IP, sistema
+  operativo y nombre visible por defecto. Se ajusta en el guion si hace falta.
 - **Qué pantallas se muestran y en qué orden.** Sale del guion.
-- **Revisión del modelo en la procedencia.** El detector informa la revisión `local` en lugar del SHA
-  `e1d3703d` del checkpoint, y eso es lo que la app mostraría en cada alerta. Se puede corregir en
-  el detector (leer `run_metadata.json`) o en el puente. Se decide al construir el puente.
+
 
 ## Out of scope
 
