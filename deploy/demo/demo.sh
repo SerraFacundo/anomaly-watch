@@ -140,7 +140,10 @@ up() {
   fi
 
   app_up
-  $DEMO up -d --build
+  # --force-recreate: podman-compose keeps an existing container even when its
+  # image was just rebuilt, so services ran weeks-old code (ingest rejected every
+  # FluentBit batch with a fix already in the image). Data lives in volumes.
+  $DEMO up -d --build --force-recreate
   # Precalentamiento: real alerts on db1 and mail1 before anyone looks, through the
   # real pipeline. The agents read from the head of each file, so this can run
   # while they are still starting.
