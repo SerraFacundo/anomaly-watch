@@ -44,6 +44,9 @@ app_up() {
   PIPELINE_SERVICE_TOKEN=$(sed -n 's/^PIPELINE_SERVICE_TOKEN=//p' "$APP_DIR/.env")
   [ -n "$PIPELINE_SERVICE_TOKEN" ] || { echo "PIPELINE_SERVICE_TOKEN is empty in $APP_DIR/.env" >&2; exit 1; }
   export PIPELINE_SERVICE_TOKEN
+  # ponytail: the demo database is disposable, so no backup before migrating. It also
+  # avoids backup-before-migrate writing ./backups as HOST_UID under rootless Podman.
+  export BACKUP_BEFORE_MIGRATE=false
 
   # backup-before-migrate too: `up api` pulls it in through depends_on (api ->
   # migrate -> backup-before-migrate), and its image only exists if built here.
