@@ -1,0 +1,5 @@
+# Demo-only additions to the team app's compose, layered by demo.sh's app().
+services:
+  web:
+    volumes:
+      - ${DEMO_ROOT}/deploy/demo/app-web-resolver.sh:/docker-entrypoint.d/30-app-web-resolver.sh:ro,z

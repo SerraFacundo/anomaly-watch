@@ -35,7 +35,10 @@ if [ -f "$TOKENS" ]; then set -a; . "$TOKENS"; set +a; fi
 # Its own project name: both checkouts lowercase to "anomaly-watch", and two
 # compose projects with one name share containers, so a `down` of one would take
 # the other with it.
-app() { (cd "$APP_DIR" && $COMPOSE -p aw-app "$@"); }
+# app.override.yml fixes the web container's DNS under Podman; its bind mount
+# needs an absolute path, since compose resolves relative ones against APP_DIR.
+export DEMO_ROOT=$PWD
+app() { (cd "$APP_DIR" && $COMPOSE -p aw-app -f docker-compose.yml -f "$DEMO_ROOT/deploy/demo/app.override.yml" "$@"); }
 
 app_up() {
   [ -d "$APP_DIR" ] || { echo "No app checkout at $APP_DIR; set APP_DIR" >&2; exit 1; }
