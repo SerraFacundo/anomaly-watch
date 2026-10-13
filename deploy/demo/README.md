@@ -75,6 +75,11 @@ deploy/demo/demo.sh watch               # vista del pipeline que se refresca cad
 deploy/demo/demo.sh attack web1         # fuerza bruta SSH en web1
 deploy/demo/demo.sh attack web2 web     # SQLi / path traversal en web2
 deploy/demo/demo.sh attack db1 panic    # kernel panic en db1: v3 no lo marca
+deploy/demo/demo.sh attack web2 low      # Low: un POST /xmlrpc.php (score 0.74, sin regla)
+deploy/demo/demo.sh attack web2 medium   # Medium: un GET /wp-login.php (score 1.00, sin regla)
+deploy/demo/demo.sh attack web2 traversal # High: regla "Path Traversal"
+deploy/demo/demo.sh attack db1 dbbrute   # High: regla "Database Brute Force" (10 logins fallidos)
+deploy/demo/demo.sh attack auth1 sudo    # High: regla "Privilege Escalation", si v3 marca la línea
 deploy/demo/demo.sh warmup              # otra tanda de problemas de fondo en db1 y mail1
 deploy/demo/demo.sh down                # frena los dos stacks, conserva datos y buffers
 deploy/demo/demo.sh reset               # borra volúmenes, tokens y credenciales de los dos

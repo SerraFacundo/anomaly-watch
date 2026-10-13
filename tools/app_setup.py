@@ -34,6 +34,24 @@ FLEET = {
     "db1": ("DB 1 - Postgres", "10.0.2.10", "Debian 12", "DATABASE", "PRODUCTION"),
     "mail1": ("Mail 1 - correo y webmail", "10.0.3.10", "Debian 12", "SERVER", "PRODUCTION"),
 }
+# Rules the demo adds on top of the app's seeded ones (SSH Brute Force, CRITICAL;
+# Privilege Escalation, HIGH), so `demo.sh attack` reaches every severity. Their
+# patterns stay clear of the background traffic: loggen's background Postgres
+# failures are for user "postgres", and no background line carries "../".
+RULES = [
+    {"code": "rule-demo-path-traversal", "name": "Path Traversal", "severity": "HIGH",
+     "description": "Request that climbs out of the web root, e.g. /../../etc/passwd.",
+     "criteria": {"pattern": r"\.\./|/etc/passwd", "minOccurrences": 1, "windowMinutes": 15,
+                  "category": "Web Attack",
+                  "mitreTechniques": [{"techniqueId": "T1190", "name": "Exploit Public-Facing Application",
+                                       "tactic": "Initial Access"}]}},
+    {"code": "rule-demo-db-brute-force", "name": "Database Brute Force", "severity": "HIGH",
+     "description": "Repeated failed database logins for privileged accounts.",
+     "criteria": {"pattern": 'password authentication failed for user "(admin|sa|dbadmin|root)"',
+                  "minOccurrences": 5, "windowMinutes": 5, "category": "Authentication",
+                  "mitreTechniques": [{"techniqueId": "T1110", "name": "Brute Force",
+                                       "tactic": "Credential Access"}]}},
+]
 MODEL = {"code": "modernbert-ft-v3", "name": "ModernBERT fine-tuned v3", "kind": "OTHER",
          "version": "e1d3703d", "stage": "ACTIVE"}
 
@@ -111,6 +129,12 @@ def main() -> int:
         if status not in (201, 409):
             sys.exit(f"Could not register node {host}: {status}")
         print(f"{host}: collector {code}, node ready")
+
+    for rule in RULES:
+        status, _ = call(api, "POST", "/api/v1/detection-rules", token, rule)
+        if status not in (201, 409):
+            sys.exit(f"Could not register rule {rule['code']}: {status}")
+    print(f"Rules ready: {', '.join(rule['name'] for rule in RULES)}")
 
     status, _ = call(api, "POST", "/api/v1/ai-models", token, MODEL)
     if status not in (200, 201, 409):

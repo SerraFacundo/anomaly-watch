@@ -35,6 +35,18 @@ NODES = {
 # The two troubled nodes: low-intensity problems in the background, healthy otherwise.
 TROUBLED = ("db1", "mail1")
 FILES = {"nginx": "access.log", "sshd": "auth.log", "postgres": "syslog", "postfix": "syslog", "kernel": "syslog"}
+# attack kind -> (file kind, what the app does with it). The scores are the ones
+# measured with v3 (fleet-scores.md and the /score checks of 13 October).
+ATTACKS = {
+    "low": "nginx",        # one POST /xmlrpc.php, 0.74: no rule, score < 0.9 -> LOW
+    "medium": "nginx",     # one GET /wp-login.php, 1.00: no rule, score >= 0.9 -> MEDIUM
+    "traversal": "nginx",  # GET /../../etc/passwd, 0.9999: rule "Path Traversal" -> HIGH
+    "dbbrute": "postgres", # 10 failed logins as admin/sa: rule "Database Brute Force" -> HIGH
+    "sudo": "sshd",        # sudo NOT in sudoers: seeded rule "Privilege Escalation" -> HIGH, if v3 flags it
+    "ssh": "sshd",         # 40 SSH failures: seeded rule "SSH Brute Force" -> CRITICAL
+    "web": "nginx",        # mixed scanner traffic (sqlmap)
+    "panic": "kernel",     # kernel panic: v3 does not flag it -> nothing
+}
 
 PATHS = ["/", "/products", "/products/42", "/cart", "/login", "/static/app.js", "/static/site.css", "/api/items?page=2"]
 WEBMAIL_PATHS = ["/webmail/", "/webmail/?_task=mail", "/webmail/?_task=mail&_mbox=INBOX", "/webmail/skins/elastic/styles.css"]
@@ -78,7 +90,9 @@ def nginx_line(path: str, status: int, client: str, agent: str, method: str = "G
 
 def syslog_line(node: str, program: str, text: str) -> str:
     now = datetime.now(UTC).strftime("%b %e %H:%M:%S")
-    tag = program if program == "kernel" else f"{program}[{random.randint(1000, 65000)}]"
+    # kernel and sudo log without a PID, as they do on a real box; the app's
+    # privilege escalation rule looks for "sudo:".
+    tag = program if program in ("kernel", "sudo") else f"{program}[{random.randint(1000, 65000)}]"
     return f"{now} {node} {tag}: {text}"
 
 
@@ -145,6 +159,20 @@ def attack(node: str, kind: str, count: int) -> list[str]:
         ]
     if kind == "panic":
         return [syslog_line(node, "kernel", text) for text in PANIC]
+    if kind == "low":
+        return [nginx_line("/xmlrpc.php", 403, attacker, "Mozilla/5.0", "POST")]
+    if kind == "medium":
+        return [nginx_line("/wp-login.php", 404, attacker, "Mozilla/5.0")]
+    if kind == "traversal":
+        return [nginx_line("/../../etc/passwd", 400, attacker, "curl/8.5.0")]
+    if kind == "dbbrute":
+        # Not "postgres": that is the background's user, which must stay below the rule.
+        return [
+            syslog_line(node, "postgres", f'FATAL:  password authentication failed for user "{random.choice(["admin", "sa", "dbadmin"])}"')
+            for _ in range(min(count, 10))
+        ]
+    if kind == "sudo":
+        return [syslog_line(node, "sudo", "  carlos : user NOT in sudoers ; TTY=pts/0 ; PWD=/home/carlos ; USER=root ; COMMAND=/usr/bin/cat /etc/shadow")]
     return [nginx_line(random.choice(WEB_ATTACKS), random.choice([400, 403, 404]), attacker, "sqlmap/1.8") for _ in range(count)]
 
 
@@ -157,14 +185,14 @@ def main() -> int:
     warm.add_argument("--count", type=int, default=4, help="background problems per troubled node")
     hit = sub.add_parser("attack")
     hit.add_argument("--node", required=True, choices=NODES)
-    hit.add_argument("--kind", default="ssh", choices=["ssh", "web", "panic"])
+    hit.add_argument("--kind", default="ssh", choices=list(ATTACKS))
     hit.add_argument("--count", type=int, default=40)
     args = parser.parse_args()
 
     if args.command == "attack":
-        if args.kind == "web" and "nginx" not in NODES[args.node]:
-            parser.error(f"{args.node} has no nginx")
-        file_kind = {"web": "nginx", "ssh": "sshd", "panic": "kernel"}[args.kind]
+        file_kind = ATTACKS[args.kind]
+        if file_kind in ("nginx", "postgres") and file_kind not in NODES[args.node]:
+            parser.error(f"{args.node} has no {file_kind}")
         lines = attack(args.node, args.kind, args.count)
         for line in lines:
             write(args.node, file_kind, line)

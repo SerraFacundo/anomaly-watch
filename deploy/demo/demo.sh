@@ -3,7 +3,10 @@
 #
 #   deploy/demo/demo.sh up                          certificate, tokens, app, whole stack
 #   deploy/demo/demo.sh watch                       refreshing view of what the pipeline found
-#   deploy/demo/demo.sh attack web1 [ssh|web|panic] inject an attack on one node
+#   deploy/demo/demo.sh attack NODE KIND            inject an attack on one node. KIND, by the
+#                                                   alert it opens: low, medium, traversal (HIGH),
+#                                                   dbbrute (HIGH, db1), sudo (HIGH), ssh (CRITICAL),
+#                                                   web (mixed scanner), panic (none: v3 misses it)
 #   deploy/demo/demo.sh warmup                      background problems on db1 and mail1
 #   deploy/demo/demo.sh logs [service]              follow a service's logs (default: bridge)
 #   deploy/demo/demo.sh down                        stop both stacks, keep data and agent buffers
@@ -179,5 +182,5 @@ case "${1:-}" in
   # Only the demo's own app project (aw-app): an app stack run by hand under its
   # default name keeps its data.
   reset) $DEMO down -v; app down -v; rm -f "$TOKENS" "$APP_CREDS" ;;
-  *) sed -n '2,11p' "$0"; exit 1 ;;
+  *) sed -n '2,14p' "$0"; exit 1 ;;
 esac
