@@ -349,6 +349,18 @@ la app levantado a mano.
 - Qué se dice del límite de v3.
 - El plan B para cada paso que puede fallar.
 
+Hechos para el guion, medidos el 13 de octubre:
+
+- Una línea escrita a mano en el log de un nodo llega al modelo y a la app en unos 10 s
+  (`podman exec anomaly-watch_loggen_1 sh -c 'echo "..." >> /logs/web2/access.log'`). Un path
+  traversal abrió una alerta Medium con score 1.00.
+- Un fallo SSH suelto llega con score 1.00 pero no abre alerta: coincide con la regla de fuerza
+  bruta, que espera 5 en 5 minutos. Para el momento "el público dicta una línea", usar líneas que
+  ninguna regla cubra, o explicar eso.
+- `/score` del detector responde líneas sueltas: `Failed password` 1.00 contra `Accepted password`
+  0.04, `/../../etc/passwd` 0.9999 contra `/products/42` 0.00, y una frase que no es un log 0.003
+  (el modelo no distingue un log de algo que no lo es).
+
 Reemplaza el guion del README de la demo. La resolución es el guion final, enlazado.
 
 ---
