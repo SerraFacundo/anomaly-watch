@@ -49,7 +49,7 @@ Sesión de grilling del 12 y 13 de octubre de 2026.
 
 - [ ] Cerrado
 - **Tipo:** `task` (HITL: los pesos de v3 están solo en la laptop)
-- **Tomado por:** —
+- **Tomado por:** Claude (script) / Facundo (corrida)
 - **Bloqueado por:** —
 
 ### Question
@@ -68,6 +68,21 @@ Candidatas:
 El agente escribe el script que puntúa cada línea contra el checkpoint, siguiendo la tabla de
 payloads del paso 4 de `deploy/demo/README.md`. Facundo lo corre en la laptop. La resolución
 registra la tabla de scores y qué líneas usa cada escenario.
+
+### Checklist para Facundo
+
+Script: `tools/score_fleet_lines.py`, con 32 líneas en 4 grupos (`panic`, `operational`,
+`background`, `normal`). Cada línea dice si se espera que v3 la marque (`flag`) o no (`pass`).
+
+1. `git pull` en la rama `claude/tender-euler-p7i7zs`.
+2. Levantar el stack si no está arriba: `deploy/demo/demo.sh up`, y esperar a que el detector esté
+   sano.
+3. Correr desde la raíz del repo:
+   `podman compose exec -T detector python - < tools/score_fleet_lines.py > fleet-scores.md`
+4. Pegar el contenido de `fleet-scores.md` en la conversación, o commitearlo junto a este archivo.
+
+Con la tabla, Claude escribe la resolución: qué líneas usa cada escenario y qué hacer con los que
+fallen.
 
 ---
 
