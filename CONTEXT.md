@@ -16,6 +16,11 @@ pipeline es el agente FluentBit con su token; en la aplicación es la entidad Co
 conectado solo con un heartbeat.
 _Avoid_: agente (como término de la aplicación), forwarder
 
+**Pipeline**:
+El servicio central que recibe los logs de todos los collectors, los agrupa por plantilla y se los
+pasa al modelo para puntuarlos.
+_Avoid_: collector (para el servicio central)
+
 **Anomalía**:
 Una línea de log que el modelo puntuó por encima del umbral, con la procedencia del modelo que la
 marcó.
