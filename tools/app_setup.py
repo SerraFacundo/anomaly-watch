@@ -65,6 +65,7 @@ def login(api: str, wait_seconds: int) -> str:
             reason = str(error)
         if time.monotonic() > deadline:
             sys.exit(f"The app never accepted the admin login ({reason}). Was it seeded?")
+        print(f"Waiting for the app API at {api}: {reason}", flush=True)
         time.sleep(5)
 
 
