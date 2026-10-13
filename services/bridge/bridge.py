@@ -31,6 +31,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections import Counter
 from datetime import UTC
 from pathlib import Path
 
@@ -156,9 +157,11 @@ def forward_anomalies(connection) -> None:
             log.warning("app answered %s; will retry from row %s", status, cursor)
             return
         if status == 200 and body:
-            for result in body.get("results", []):
-                if result.get("outcome") == "REJECTED":
-                    log.warning("rejected %s: %s %s", result.get("anomalyId"), result.get("reason"), result.get("detail"))
+            # One line per distinct reason: a host with no node rejects every row it sent.
+            rejected = Counter((r.get("reason"), r.get("detail")) for r in body.get("results", [])
+                               if r.get("outcome") == "REJECTED")
+            for (reason, detail), count in rejected.items():
+                log.warning("rejected %s rows: %s %s", count, reason, detail)
             log.info("forwarded %s rows: %s accepted, %s duplicate, %s rejected; alerts created %s",
                      len(run), body.get("accepted"), body.get("duplicates"), body.get("rejected"),
                      body.get("alertsCreated"))
