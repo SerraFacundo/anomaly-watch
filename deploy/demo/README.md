@@ -38,10 +38,10 @@ corrida encontró, están en [RUN-RECORD.md](RUN-RECORD.md).
   `export HF_TOKEN=hf_...` o `uvx --from huggingface_hub hf auth login` una vez.
   Son 575 MB: `config.json`, `model.safetensors`, `tokenizer.json`,
   `tokenizer_config.json`, `special_tokens_map.json` y `run_metadata.json`.
-- Podman rootless: nginx publica el 443, así que hace falta
-  `sudo sysctl net.ipv4.ip_unprivileged_port_start=80`. Fedora 41 y posteriores
-  ya vienen con ese valor; comprobalo con
-  `sysctl net.ipv4.ip_unprivileged_port_start` antes de pedir sudo.
+- Podman rootless: `demo.sh` publica nginx en 8443 y 8880 en el host, no en
+  443 y 80, porque los agentes le hablan por la red interna. Para usar los
+  puertos estándar: `NGINX_HTTPS_PORT=443 NGINX_HTTP_PORT=80` y
+  `sudo sysctl net.ipv4.ip_unprivileged_port_start=80`.
 - `openssl` en el host (para el certificado autofirmado).
 
 No hace falta ningún `chcon`: los bind mounts llevan la opción `z` y Podman

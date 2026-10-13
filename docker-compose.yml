@@ -138,9 +138,11 @@ services:
       - ./deploy/nginx/20-resolver-from-resolv-conf.sh:/docker-entrypoint.d/20-resolver-from-resolv-conf.sh:ro,z
     # The only host-exposed service in the stack. Everything else is reachable
     # only from the internal network.
+    # Host ports overridable: rootless Podman cannot bind below 1024 unless
+    # net.ipv4.ip_unprivileged_port_start allows it (deploy/demo/demo.sh moves them).
     ports:
-      - "443:443"
-      - "80:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+      - "${NGINX_HTTP_PORT:-80}:80"
     # Mapping form, not the `[anomaly-watch]` list the other services use:
     # deploy/demo/compose.demo.yml overrides this key to add a network alias,
     # and podman-compose 1.6.0 merges overlays by type — a list here against a

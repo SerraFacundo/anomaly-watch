@@ -19,6 +19,10 @@ NODES="web1 web2 auth1 db1 mail1"
 TOKENS=deploy/demo/tokens.env
 APP_DIR=${APP_DIR:-../Anomaly-Watch}
 APP_CREDS=deploy/demo/app-credentials.env
+# The agents reach nginx inside the compose network, so its host ports only
+# matter to a browser. Unprivileged by default: rootless Podman refuses 80/443
+# on hosts where net.ipv4.ip_unprivileged_port_start is still 1024.
+export NGINX_HTTPS_PORT=${NGINX_HTTPS_PORT:-8443} NGINX_HTTP_PORT=${NGINX_HTTP_PORT:-8880}
 # Users, roles, rules and settings, but none of the app's fictitious nodes, logs,
 # alerts or topology: everything on screen comes from this pipeline.
 SEED_SKIP=MonitoredNodesSeeder,EventLogsSeeder,AlertsSeeder,NetworkTopologySeeder,CollectorsSeeder
