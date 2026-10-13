@@ -38,6 +38,18 @@ app_up() {
     cp "$APP_DIR/.env.example" "$APP_DIR/.env"
     echo "Created $APP_DIR/.env from .env.example"
   fi
+  # Variables the app added after this .env was copied (e.g. 2FA): take them from
+  # .env.example, without touching the ones already set.
+  grep -E '^[A-Z_][A-Z0-9_]*=' "$APP_DIR/.env.example" | while IFS= read -r line; do
+    grep -q "^${line%%=*}=" "$APP_DIR/.env" || echo "$line" >> "$APP_DIR/.env"
+  done
+  # Required and with no usable default: the API refuses to start without a base64
+  # key of 32 bytes (44 characters).
+  if ! grep -qE '^TWO_FACTOR_ENCRYPTION_KEY=.{44}$' "$APP_DIR/.env"; then
+    sed -i '/^TWO_FACTOR_ENCRYPTION_KEY=/d' "$APP_DIR/.env"
+    echo "TWO_FACTOR_ENCRYPTION_KEY=$(openssl rand -base64 32)" >> "$APP_DIR/.env"
+    echo "Generated TWO_FACTOR_ENCRYPTION_KEY in $APP_DIR/.env"
+  fi
   if grep -q '^DEPLOYMENT_MODE=Showcase' "$APP_DIR/.env"; then
     echo "DEPLOYMENT_MODE=Showcase turns the app's pipeline endpoint off; use Production" >&2; exit 1
   fi
