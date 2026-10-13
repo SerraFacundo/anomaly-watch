@@ -238,7 +238,7 @@ Probado contra una app falsa y una conexión falsa: cursor, idempotencia, reinte
 
 ## 5. Flota de 5 nodos y escenarios del generador
 
-- [ ] Cerrado
+- [x] Cerrado
 - **Tipo:** `task` (AFK)
 - **Tomado por:** Claude
 - **Bloqueado por:** 1
@@ -257,7 +257,13 @@ Llevar `deploy/demo/` de 3 nodos a 5:
 Un nodo más es un contenedor FluentBit más y algo de RAM: verificar que la laptop lo aguante junto
 con la app.
 
-**Escrito, falta validar en la laptop.**
+### Resolución
+
+Validado en la laptop el 13 de octubre: los 5 agentes entregan, el precalentamiento abre alertas
+de fondo en db1 (Postgres) y mail1 (sondeos web), `attack web1 ssh` abre el Critical de fuerza
+bruta y `attack db1 panic` no abre ninguna alerta, como se midió en el ticket 1.
+
+Lo escrito:
 
 - `loggen.py`: 5 nodos. `db1` corre sshd y postgres; `mail1` corre nginx (webmail), sshd y postfix.
   Postgres, postfix y kernel escriben en `/logs/<nodo>/syslog`, que FluentBit lee con
