@@ -57,7 +57,12 @@ app_up() {
   # Both are idempotent, so every `up` runs them.
   app run --rm --no-deps migrate
   app run --rm --no-deps -e Seed__Skip="$SEED_SKIP" api seed
-  app up -d api web
+  # --no-deps: podman-compose turns depends_on into `podman --requires`, which
+  # refuses migrate once it has run to completion ("container state improper").
+  # The steps above already ordered everything. Containers created with
+  # --requires by an earlier `up` keep it, so they go first.
+  ${COMPOSE%% *} rm -f aw-app_api_1 aw-app_web_1 >/dev/null 2>&1 || true
+  app up -d --no-deps api web
   python3 tools/app_setup.py --api "${APP_API_HOST_URL:-http://localhost:8080}" --out "$APP_CREDS"
 }
 
