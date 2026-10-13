@@ -35,6 +35,9 @@ anomalías y su evidencia. Se cierra con una corrida ensayada, registrada y con 
   en la laptop con un solo comando; 5 nodos (3 sanos, 2 con problemas); base de la app limpia y
   precalentada por el pipeline real; los nodos se ven online por el heartbeat de su collector; el
   límite del modelo con un kernel panic se muestra en vivo.
+- [Medir v3 contra los logs de la flota](tasks.md#1-medir-v3-contra-los-logs-de-la-flota): el kernel
+  panic, las fallas operativas y el tráfico normal pasan sin marcar; de fondo se usan las 7 líneas
+  que v3 sí marca (SSH, login de Postgres, sondeos web). Postfix y `/.git/config` se le escapan.
 
 ## Not yet specified
 
@@ -52,6 +55,9 @@ anomalías y su evidencia. Se cierra con una corrida ensayada, registrada y con 
 - **Ficha de los nodos en la app.** Tipo, entorno, IP, sistema operativo y nombre visible de cada
   uno de los 5 nodos. Es un detalle de presentación y se decide en el guion.
 - **Qué pantallas se muestran y en qué orden.** Sale del guion.
+- **Revisión del modelo en la procedencia.** El detector informa la revisión `local` en lugar del SHA
+  `e1d3703d` del checkpoint, y eso es lo que la app mostraría en cada alerta. Se puede corregir en
+  el detector (leer `run_metadata.json`) o en el puente. Se decide al construir el puente.
 
 ## Out of scope
 

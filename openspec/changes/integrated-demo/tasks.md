@@ -47,7 +47,7 @@ Sesión de grilling del 12 y 13 de octubre de 2026.
 
 ## 1. Medir v3 contra los logs de la flota
 
-- [ ] Cerrado
+- [x] Cerrado
 - **Tipo:** `task` (HITL: los pesos de v3 están solo en la laptop)
 - **Tomado por:** Claude (script) / Facundo (corrida)
 - **Bloqueado por:** —
@@ -68,6 +68,40 @@ Candidatas:
 El agente escribe el script que puntúa cada línea contra el checkpoint, siguiendo la tabla de
 payloads del paso 4 de `deploy/demo/README.md`. Facundo lo corre en la laptop. La resolución
 registra la tabla de scores y qué líneas usa cada escenario.
+
+### Resolución
+
+Medido el 13 de octubre de 2026 en la laptop, contra el detector en su contenedor. La tabla completa
+está en [fleet-scores.md](fleet-scores.md).
+
+- **Kernel panic: 6 de 6 sin marcar**, con scores entre 0.0014 y 0.0143, lejos del umbral de 0.5.
+  El momento en vivo funciona. Para el escenario `panic` se usan las 6 líneas, en orden: oops, RIP,
+  page fault y el `Kernel panic - not syncing` con su cierre `---[ end Kernel panic ...]---`.
+- **Otras fallas operativas: 7 de 7 sin marcar** (OOM, error de EXT4, error de I/O, disco lleno en
+  Postgres, servicio muerto por OOM y cola de mail llena). La de score más alto es el error de I/O, con
+  0.0963. Respaldan con datos el cierre: "v3 no ve fallas operativas".
+- **Tráfico normal de los nodos nuevos: 8 de 8 sin marcar**, todos por debajo de 0.006. Los nodos
+  sanos no se van a llenar de falsas alarmas.
+- **Fondo: 7 de 11 marcados.** Los nodos con problemas usan solo las líneas que se marcaron:
+  - `db1`: `Failed password for root` (1.0), `Invalid user oracle` (1.0) y Postgres
+    `password authentication failed` (0.9944). Que v3 marque la falla de login de Postgres es
+    nuevo: no estaba medido.
+  - `mail1`: `Failed password for invalid user` en sshd (1.0) y sondeos web a `/wp-login.php` (1.0),
+    `/phpmyadmin/` (0.9931) y `POST /xmlrpc.php` (0.7449). Para eso, `mail1` sirve un webmail
+    detrás de nginx.
+- **Lo que v3 no marca y no se usa de fondo:** el cierre preauth de sshd (0.0004), el fallo de
+  SASL de postfix (0.0001), el relay denegado de postfix (0.0000) y `GET /.git/config` (0.0010).
+  Que los ataques contra el servidor de mail se le escapen es otro límite honesto para el cierre,
+  junto con SQLi y XSS.
+
+**Lo que esto destapa para otros tickets:**
+
+- **La revisión que informa el detector es `local`, no el SHA del checkpoint** (`e1d3703d`). La
+  app guarda esa revisión como procedencia de cada anomalía, así que en pantalla se va a leer
+  `local`. Pasa a "Not yet specified" del mapa.
+- **En una máquina real, un kernel panic la congela antes de que el agente mande la línea.** Lo
+  que se ve de verdad es un nodo que deja de reportar. El guion tiene que decirlo cuando inyecte
+  las líneas.
 
 ### Checklist para Facundo
 
