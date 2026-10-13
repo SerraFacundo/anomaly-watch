@@ -45,7 +45,9 @@ app_up() {
   [ -n "$PIPELINE_SERVICE_TOKEN" ] || { echo "PIPELINE_SERVICE_TOKEN is empty in $APP_DIR/.env" >&2; exit 1; }
   export PIPELINE_SERVICE_TOKEN
 
-  app build api web
+  # backup-before-migrate too: `up api` pulls it in through depends_on (api ->
+  # migrate -> backup-before-migrate), and its image only exists if built here.
+  app build api web backup-before-migrate
   app up -d db redis
   # Explicit steps instead of depends_on conditions, which podman-compose does not
   # always honour: schema first, then the seed, then the API that serves them.
