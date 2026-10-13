@@ -90,7 +90,7 @@ fallen.
 
 - [ ] Cerrado
 - **Tipo:** `task` (AFK)
-- **Tomado por:** —
+- **Tomado por:** Claude
 - **Bloqueado por:** —
 
 ### Question
@@ -102,6 +102,10 @@ existentes, y un PR. El paso a offline queda en "Not yet specified" del mapa has
 pantalla.
 
 La resolución registra el link del PR y si `dotnet test` pasa.
+
+**En curso.** Draft PR: https://github.com/blauerwolf/Anomaly-Watch/pull/1. El código y los tests
+están escritos; falta que el CI compile y pase los tests, porque el entorno donde se escribió no
+tiene el SDK de .NET. El ticket se cierra con el CI en verde.
 
 ---
 
