@@ -41,6 +41,11 @@ anomalías y su evidencia. Se cierra con una corrida ensayada, registrada y con 
 - [Medir v3 contra los logs de la flota](tasks.md#1-medir-v3-contra-los-logs-de-la-flota): el kernel
   panic, las fallas operativas y el tráfico normal pasan sin marcar; de fondo se usan las 7 líneas
   que v3 sí marca (SSH, login de Postgres, sondeos web). Postfix y `/.git/config` se le escapan.
+- [Setup](tasks.md#3-setup-de-la-app-base-limpia-collectors-y-nodos-de-la-flota),
+  [puente](tasks.md#4-puente-del-pipeline-a-la-app) y
+  [orquestación](tasks.md#6-orquestación-un-solo-up-y-un-solo-reset-para-los-dos-stacks), validados
+  en la laptop: un `demo.sh up` muestra los 5 nodos online, alertas de fondo reales y el Critical
+  del ataque SSH en vivo.
 
 ## Not yet specified
 
@@ -54,6 +59,12 @@ anomalías y su evidencia. Se cierra con una corrida ensayada, registrada y con 
 - **Ficha de los nodos en la app.** `tools/app_setup.py` les pone tipo, entorno, IP, sistema
   operativo y nombre visible por defecto. Se ajusta en el guion si hace falta.
 - **Qué pantallas se muestran y en qué orden.** Sale del guion.
+- **Falso positivo visible.** v3 marca `Accepted publickey for ... ssh2` (0.59 a 0.88), una línea
+  normal del tráfico de fondo, y la app abre una alerta Low. El guion decide si se muestra como
+  límite del modelo junto con el kernel panic o si se saca del fondo.
+- **Detalles de la app que se ven en pantalla:** el riesgo del nodo queda en 0 aunque tenga
+  alertas, y el template de Postgres conserva el PID (`postgres[34351]`) porque Drain no lo
+  enmascara.
 
 
 ## Out of scope

@@ -145,7 +145,7 @@ tiene el SDK de .NET. El ticket se cierra con el CI en verde.
 
 ## 3. Setup de la app: base limpia, collectors y nodos de la flota
 
-- [ ] Cerrado
+- [x] Cerrado
 - **Tipo:** `task` (AFK)
 - **Tomado por:** Claude
 - **Bloqueado por:** —
@@ -166,7 +166,14 @@ alertas y topología ficticios. Hay que:
 La resolución registra el procedimiento, el formato del archivo de credenciales y los usuarios con
 los que se entra a la app.
 
-**Escrito, falta validar en la laptop.**
+### Resolución
+
+Validado en la laptop el 13 de octubre: `app_setup.py` creó los 5 collectors y nodos y la app los
+muestra con su ficha. Se entra con `admin@anomalywatch.local` / `password123`. Ajustes que hizo
+falta en el camino (todos en `demo.sh`): completar el `.env` de la app con las variables nuevas y
+generar `TWO_FACTOR_ENCRYPTION_KEY`, y que `app_setup.py` diga qué espera mientras la API arranca.
+
+Lo escrito:
 
 - App (`blauerwolf/Anomaly-Watch`, rama `claude/tender-euler-p7i7zs`, commit `0c7a7eb`): `Seed:Skip`
   omite seeders por nombre de clase. La demo omite `MonitoredNodesSeeder`, `EventLogsSeeder`,
@@ -182,7 +189,7 @@ los que se entra a la app.
 
 ## 4. Puente del pipeline a la app
 
-- [ ] Cerrado
+- [x] Cerrado
 - **Tipo:** `task` (AFK)
 - **Tomado por:** Claude
 - **Bloqueado por:** 3
@@ -203,7 +210,15 @@ Si la app está caída, reintenta sin frenar el pipeline. En la resolución: qu�
 agrupadas (`occurrences`), qué hace con los rechazos `UNKNOWN_HOST`, y un smoke test al estilo de
 `tools/smoke_ingest.py`.
 
-**Escrito, falta validar en la laptop.** `services/bridge/bridge.py` es un servicio `bridge` en
+### Resolución
+
+Validado en la laptop el 13 de octubre: las anomalías de db1 y mail1 abrieron alertas Low y Medium
+con su evidencia, modelo `modernbert-ft-v3@e1d3703d90af` y template; el ataque SSH abrió el
+Critical "SSH Brute Force" con 5 líneas de evidencia; los 5 nodos quedan `ONLINE` y
+`CONNECTED` por el heartbeat. Las 97 filas viejas de un `loadtest` previo se rechazaron con
+`UNKNOWN_HOST`, como corresponde; el log ahora agrupa los rechazos por motivo.
+
+Lo escrito: `services/bridge/bridge.py` es un servicio `bridge` en
 `compose.demo.yml`: corre en la imagen de ingest, que ya trae psycopg, y está conectado a la red del
 pipeline y a la de la app (`aw-app_default`).
 
@@ -261,7 +276,7 @@ toda línea de panic con una medida como no marcada.
 
 ## 6. Orquestación: un solo `up` y un solo `reset` para los dos stacks
 
-- [ ] Cerrado
+- [x] Cerrado
 - **Tipo:** `task` (AFK)
 - **Tomado por:** Claude
 - **Bloqueado por:** 3, 4
@@ -280,7 +295,22 @@ frontend) desde un checkout hermano (`APP_DIR`, por defecto `../Anomaly-Watch`):
 los dos stacks (443 y 80 del pipeline, 8080 de la API, el del frontend) y las rarezas de
 podman-compose documentadas en `RUN-RECORD.md`.
 
-**Escrito, falta validar en la laptop.** `demo.sh up`:
+### Resolución
+
+Validado en la laptop el 13 de octubre: un `demo.sh up` deja todo andando. Rarezas de Podman que
+hubo que resolver, en `demo.sh` y `app.override.yml`:
+
+- podman-compose convierte `depends_on` en `--requires`, que rechaza un `migrate` ya terminado:
+  `api` y `web` se levantan con `--no-deps` (el orden lo ponen los pasos previos).
+- El backup previo a migrar se saltea (`BACKUP_BEFORE_MIGRATE=false`): la base es descartable.
+- Podman rootless no publica 80/443: nginx del pipeline sale por 8443/8880 en el host.
+- El nginx de la web tiene `resolver 127.0.0.11` (DNS de Docker): un override monta un script que
+  pone el DNS real del contenedor.
+- podman-compose no recrea contenedores cuando cambia la imagen: el stack del pipeline se levanta
+  con `--force-recreate` (ingest corría código de antes de aceptar el array de FluentBit).
+- `demo.sh logs [servicio]`, porque el overlay necesita los tokens que carga `demo.sh`.
+
+Lo escrito: `demo.sh up`:
 
 1. Emite los tokens que falten (también para los nodos nuevos, sin tocar los otros).
 2. Levanta la app como proyecto `aw-app` (`APP_DIR`, por defecto `../Anomaly-Watch`). El nombre
