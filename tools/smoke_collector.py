@@ -10,6 +10,8 @@ Covers:
   3. security-relevant lines bypass the cache even when their template is cached
   4. shedding follows the fixed order and never touches ERROR/WARN
   5. every discarded record is counted, and counted traffic includes discards
+  6. a replayed spool batch gets the same anomaly ids, and instants are measured
+  7. one latency sample per scored record, none for discarded ones
 
 Usage:
     uv run python tools/smoke_collector.py
@@ -20,17 +22,22 @@ from __future__ import annotations
 import re
 import sys
 import tempfile
+import time
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "services"))
 sys.path.insert(0, str(REPO_ROOT / "services" / "collector"))
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 from cache import ScoreCache, needs_bypass  # noqa: E402
 from config import Settings  # noqa: E402
 from parser import LogParser  # noqa: E402
-from pipeline import Pipeline, classify_level  # noqa: E402
+from common.latency import BOUNDS_MS  # noqa: E402
+from common.spool import Spool, received_at  # noqa: E402
+from pipeline import Pipeline, _latency_rows, classify_level  # noqa: E402
 
 
 class StubScorer:
@@ -243,6 +250,95 @@ def main() -> int:
         f"{counted} counted, {pipeline.counters.total_discarded} discarded",
     )
     failures += not check("discard reasons reported", bool(pipeline.counters.as_dict()["discarded_by_reason"]))
+
+    print("\n8. instants and identity")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Spool(Path(tmp)).append([wire("x")])
+        stamp = received_at(path)
+        failures += not check(
+            "reception instant is the one in the batch name",
+            # To the microsecond: the name carries nanoseconds, a datetime does not.
+            stamp is not None
+            and abs(stamp.timestamp() - int(path.stem.split("-")[1]) / 1e9) < 2e-6,
+            f"{path.stem} -> {stamp}",
+        )
+    failures += not check("a foreign file name has no instant", received_at(Path("notes.jsonl")) is None)
+
+    pipeline, cache, scorer, _ = build({"batch_size": 2})
+    inner = pipeline._scorer
+
+    def slow(records):
+        time.sleep(0.005)
+        return inner(records)
+
+    pipeline._scorer = slow
+    received = datetime.now(UTC)
+    auth = [wire(f"Failed password for root from 10.0.0.{i}") for i in range(4)]
+    rows = pipeline.process(auth, "batch-1", received).anomalies
+    failures += not check("two detector calls, two instants", len({r["analyzed_at"] for r in rows}) == 2,
+                          f"{len({r['analyzed_at'] for r in rows})} distinct")
+    failures += not check("ingested_at is the reception, not now",
+                          all(r["ingested_at"] == received for r in rows))
+    failures += not check("analysis took measurable time",
+                          all(r["analyzed_at"] > r["ingested_at"] for r in rows))
+
+    ahead = datetime.now(UTC) + timedelta(hours=1)
+    rows = pipeline.process(auth, "batch-2", ahead).anomalies
+    failures += not check("analyzed_at never precedes ingested_at",
+                          all(r["analyzed_at"] == ahead for r in rows))
+
+    pipeline, cache, scorer, _ = build()
+    batch = [wire(f"GPU process launch failed attempt {i} ERROR") for i in range(10)]
+    batch += [wire(f"Failed password for root from 10.0.0.{i}") for i in range(5)]
+    first = pipeline.process(batch, "batch-7", received).anomalies
+    again = pipeline.process(batch, "batch-7", received).anomalies
+    other = pipeline.process(batch, "batch-8", received).anomalies
+    failures += not check("6 rows: 5 auth lines and one collapsed template", len(first) == 6, f"{len(first)} rows")
+    failures += not check("replayed batch keeps its anomaly ids",
+                          [r["anomaly_id"] for r in first] == [r["anomaly_id"] for r in again])
+    failures += not check("ids unique within a batch", len({r["anomaly_id"] for r in first}) == len(first))
+    failures += not check("another batch gets other ids",
+                          not {r["anomaly_id"] for r in first} & {r["anomaly_id"] for r in other})
+    unnamed = [pipeline.process(batch).anomalies for _ in range(2)]
+    failures += not check("unnamed batches never share ids",
+                          not {r["anomaly_id"] for r in unnamed[0]} & {r["anomaly_id"] for r in unnamed[1]})
+
+    print("\n9. latency samples")
+    with tempfile.TemporaryDirectory() as tmp:
+        pipeline, cache, scorer, _ = build(
+            {"shed_sample_at": 1, "shed_level_at": 1, "hot_template_hits": 1}, Path(tmp)
+        )
+        pipeline.process([wire(f"Served request id={i} in 12ms") for i in range(120)])
+        pipeline.policy.update_depth(1_000_000)
+        before = pipeline.counters.as_dict()
+        mixed = (
+            [wire(f"Served request id={900 + i} in 12ms") for i in range(50)]  # shed
+            + [wire("disk read ERROR on sda", level="ERROR") for _ in range(5)]  # one miss, four reused
+            + [wire("Failed password for root from 10.0.0.9", level="INFO") for _ in range(5)]  # bypass
+            + [wire("")]  # unparseable
+        )
+        outcome = pipeline.process(mixed, "batch-9", received)
+        after = pipeline.counters.as_dict()
+        scored = (after["scored"] - before["scored"]) + (after["from_cache"] - before["from_cache"])
+        discarded = after["discarded_total"] - before["discarded_total"]
+        samples = sum(row["count"] for row in outcome.latency)
+        failures += not check("some records were discarded", discarded > 0, f"{discarded} discarded")
+        failures += not check("one sample per scored record", samples == scored == len(mixed) - discarded,
+                              f"{samples} samples, {scored} scored, {len(mixed)} in the batch")
+        failures += not check("histogram adds up to the count",
+                              all(sum(r["bucket_counts"]) == r["count"] for r in outcome.latency))
+        failures += not check("rows carry the batch", all(r["batch"] == "batch-9" for r in outcome.latency))
+
+    start = datetime(2026, 1, 1, 14, 5, 0, tzinfo=UTC)
+    rows = _latency_rows(
+        [(None, 0.0, False, False, start + timedelta(seconds=59)),
+         (None, 0.0, False, False, start + timedelta(seconds=61))],
+        "b", start + timedelta(seconds=58),
+    )
+    failures += not check("each sample lands in the minute its analysis ended",
+                          [(r["minute"].minute, r["count"]) for r in rows] == [(5, 1), (6, 1)])
+    failures += not check("a 1000 ms sample counts in the 1000 bucket",
+                          rows[0]["bucket_counts"][BOUNDS_MS.index(1000)] == 1 and rows[0]["max_ms"] == 1000.0)
 
     print()
     if failures:
