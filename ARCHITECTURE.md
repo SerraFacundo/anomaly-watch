@@ -154,6 +154,7 @@ graph TB
 | **ingest-service** | Python / FastAPI | HTTP entry point for agents. Authenticates the agent, validates against the wire contract, and spools the batch durably. Acknowledges only once the batch is on disk | 8004 (internal) |
 | **log-collector** | Python / Drain3 | Consumes the spool, extracts templates with Drain3, resolves scores through the template cache, calls `detector-service` for misses, persists anomalies and hourly counters. Owns the drop policy | 8005 (internal, status only) |
 | **detector-service** | Python / FastAPI + transformers | Serves the anomaly model over HTTP (`POST /score`). CPU inference. The one component that loads model weights | 8003 (internal) |
+| **bridge** | Python (stdlib + psycopg) | Reports what the pipeline wrote to the team's web app: anomalies, analysis-latency windows and collector heartbeats. Optional, behind the compose profile `bridge` | — |
 
 > **`log-collector` runs as exactly one replica.** Drain3 learns templates
 > online, so two instances build divergent template trees and the same log line
@@ -162,6 +163,34 @@ graph TB
 > state persists to a volume; without that, a restart renumbers every template
 > and the historical `anomalies` rows stop being interpretable. Scaling out
 > requires shared template state, not more replicas.
+
+> **The bridge is the only process that talks to the web app.** `log-collector`
+> writes to Postgres in the transaction it already runs per batch, and
+> `services/bridge/bridge.py` polls from there. An app that is down or slow
+> costs the bridge retries; it never stalls the loop that drains the spool. The
+> bridge keeps one cursor per stream in the `bridge_cursors` table, in the same
+> database as the rows it counts, and moves it only on a `200`. That includes a
+> `400`: it means the report itself is wrong (an empty model revision, bucket
+> bounds that changed on the app's side), so the bridge logs the response and
+> holds, rather than skipping every report that would fail the same way.
+> Delivery is at-least-once; the app answers a known `anomalyId` with
+> `DUPLICATE` and replaces a latency window it already has.
+
+> **Every anomaly carries two measured instants.** `ingested_at` is when
+> `ingest-service` took the batch, read from the `time_ns` in the spool file's
+> name, so it includes the wait in the spool and does not depend on any agent's
+> clock. `analyzed_at` is stamped when the record's score came back, once per
+> detector call. Their difference is the analysis stage the web app shows.
+> `anomaly_id` is a `uuid5` of the spool batch name and the record's position in
+> it: a batch replayed after a crash produces the same ids and no second row.
+
+> **Analysis latency is read next to the discard counters.** Each scored record
+> — flagged or not, from the model or the cache — is one sample, aggregated per
+> minute into the histogram buckets the web app defines
+> (`services/common/latency.py`) and stored in `latency_samples`. A record shed
+> before scoring is not a sample, so under load the latency *improves* while
+> the pipeline throws work away. `discarded_by_reason` in `log-collector`'s
+> `/status` is what tells the two apart.
 
 > **`tools/replay.py` is not deprecated by this.** It reads a log file, parses
 > it with Drain3 and calls `detector-service` directly. It remains the offline
@@ -237,7 +266,10 @@ elsewhere:
 
 `log-collector` deletes a spooled batch only after it has been fully processed,
 so a crash replays that batch rather than losing it. Delivery is at-least-once
-and a duplicate costs one cache hit.
+and a duplicate costs one cache hit. The replay writes nothing twice: anomaly
+ids and latency rows are keyed by the batch, so both inserts find what the first
+run left (§2.2). The exception is `occurrences` on a collapsed row that already
+existed before the batch, which the replay adds to again.
 
 **Wire contract** — `services/common/wire.py`, frozen before the first agent
 shipped:
@@ -521,6 +553,7 @@ All services (except FluentBit agents) run in a single Docker Compose stack on t
 | **ingest-service** | custom (Python/FastAPI) | 8004 (internal) | built | Agent endpoint. Writes to the spool volume |
 | **log-collector** | custom (Python/Drain3) | 8005 (internal, status only) | built | **Single replica.** Drain3 state on a volume |
 | **detector-service** | custom (Python/FastAPI) | 8003 (internal) | built | CPU inference. Model cache mounted read-only; `HF_HUB_OFFLINE=1` |
+| **bridge** | ingest image, script mounted | — | built | Only with `--profile bridge`. Needs `APP_API_URL` and the app's `PIPELINE_SERVICE_TOKEN` |
 | **ollama** | ollama/ollama | 11434 (internal) | planned | LLM model runtime |
 | **api** | custom (Python/FastAPI) | 8000 (internal) | planned | Behind Nginx |
 | **rag-engine** | custom (Python) | 8001 (internal) | planned | Called by API |
@@ -603,6 +636,8 @@ Postgres is the sole relational data store. Schema is organized into logical are
 | **Templates** | `template_counts` | Per-template hourly totals per host: lines seen and lines flagged. Partitioned by month |
 | **Anomalies** | `anomalies` | Detected anomalies with model scores and the full source line. Repeats of one template, on one host, in one hour collapse into a single row carrying `occurrences`, an exemplar line and the peak score. Records that bypassed the score cache are exempt and stay one row per line, because their content — the source address, the attempted username — is the finding |
 | **Agents** | `agents` | Registered log agents: id, host, token hash, created, last seen, revoked |
+| **Latency** | `latency_samples` | Analysis-latency histogram per minute and spool batch, insert-only. The bridge sums a minute's rows into the window it reports, and deletes rows it has sent once they are an hour old: by then their minute gets no more samples |
+| **Bridge** | `bridge_cursors` | Last row of `anomalies` and of `latency_samples` the web app acknowledged |
 | **Alerts** | `alerts`, `alert_enrichments` | Alert records with RAG-enriched explanations, ATT&CK mappings, contingency actions |
 | **Users & Roles** | `users`, `roles`, `user_roles` | User accounts, RBAC role definitions, and role assignments |
 | **Configuration** | `system_config`, `notification_config` | System-wide and per-channel notification configuration |
@@ -617,6 +652,8 @@ Postgres is the sole relational data store. Schema is organized into logical are
 | `score` | Raw model output in `[0,1]`, stored unthresholded |
 | `threshold` | The threshold in force when the row was written |
 | `model_key`, `model_revision` | Which model, at which exact revision |
+| `anomaly_id` | Stable identity, derived from the spool batch and the position in it. The idempotency key towards the web app. Null on rows older than the column |
+| `ingested_at`, `analyzed_at` | When ingest received the line's batch, and when the line got its score |
 
 Storing `model_key` / `model_revision` / `threshold` alongside the score is what
 keeps historical anomalies interpretable across a model swap. A bare score from

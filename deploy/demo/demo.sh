@@ -17,8 +17,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+export MSYS_NO_PATHCONV=1
+ROOT=$(pwd -W 2>/dev/null || pwd)
+
 COMPOSE=${COMPOSE:-podman compose}
-DEMO="$COMPOSE -f docker-compose.yml -f deploy/demo/compose.demo.yml"
+# The bridge sits behind a profile in docker-compose.yml; the demo is where it runs.
+DEMO="$COMPOSE --profile bridge -f docker-compose.yml -f deploy/demo/compose.demo.yml"
 NODES="web1 web2 auth1 db1 mail1"
 TOKENS=deploy/demo/tokens.env
 APP_DIR=${APP_DIR:-../Anomaly-Watch}
@@ -40,7 +44,7 @@ if [ -f "$TOKENS" ]; then set -a; . "$TOKENS"; set +a; fi
 # the other with it.
 # app.override.yml fixes the web container's DNS under Podman; its bind mount
 # needs an absolute path, since compose resolves relative ones against APP_DIR.
-export DEMO_ROOT=$PWD
+export DEMO_ROOT=$ROOT
 app() { (cd "$APP_DIR" && $COMPOSE -p aw-app -f docker-compose.yml -f "$DEMO_ROOT/deploy/demo/app.override.yml" "$@"); }
 
 app_up() {
@@ -132,7 +136,7 @@ up() {
     for node in $missing; do
       # `z` relabels the mount for SELinux. Without it an enforcing host denies
       # container_t reading user_home_t and python exits with Errno 13.
-      token=$($COMPOSE run --rm -v "$PWD/tools:/app/tools:ro,z" ingest \
+      token=$($COMPOSE run --rm -v "$ROOT/tools:/app/tools:ro,z" ingest \
         python tools/agent_token.py --dsn "$DSN" issue --host "$node" | awk '/^token/ {print $3}')
       [ -n "$token" ] || { echo "Could not issue a token for $node" >&2; rm -f "$tmp"; exit 1; }
       echo "TOKEN_${node^^}=$token" >> "$tmp"

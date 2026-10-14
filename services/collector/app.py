@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from archive import RawArchive  # noqa: E402
 from cache import ScoreCache  # noqa: E402
-from common.spool import Spool  # noqa: E402
+from common.spool import Spool, received_at  # noqa: E402
 from config import Settings  # noqa: E402
 from parser import LogParser  # noqa: E402
 from pipeline import Pipeline  # noqa: E402
@@ -93,8 +93,10 @@ async def run_loop() -> None:
             for path in pending[:20]:
                 records = spool.read(path)
                 archive.write(records)
-                outcome = await asyncio.to_thread(pipeline.process, records)
-                await asyncio.to_thread(store.write, outcome.anomalies, outcome.counters)
+                # Name and reception instant both come from the file, so a
+                # replay after a crash reproduces the same anomaly ids.
+                outcome = await asyncio.to_thread(pipeline.process, records, path.stem, received_at(path))
+                await asyncio.to_thread(store.write, outcome.anomalies, outcome.counters, outcome.latency)
                 spool.done(path)
                 _state["last_batch_at"] = time.time()
         except Exception:  # noqa: BLE001

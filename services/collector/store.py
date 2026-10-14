@@ -55,7 +55,17 @@ ANOMALIES_COLUMNS = [
     # FALSE means "this row is one specific line and must stay that way".
     "ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS collapsed BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS hour TIMESTAMPTZ",
+    # Null on rows written before these existed; the bridge falls back for those.
+    "ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS anomaly_id UUID",
+    "ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ",
+    "ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMPTZ",
 ]
+
+# What makes a replayed spool batch harmless: the id is derived from the batch
+# and the position in it, so the same line maps to the same row.
+ANOMALIES_ID_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS anomalies_anomaly_id_idx ON anomalies (anomaly_id)
+"""
 
 # Partial: only collapsed rows are unique per template/host/hour/model. Rows that
 # opted out of grouping are free to repeat, which is the entire point of them.
@@ -68,12 +78,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS anomalies_group_idx
 UPSERT_ANOMALY_GROUP = """
 INSERT INTO anomalies
     (host, agent_id, source, log_timestamp, template_id, template, message, score, threshold,
-     model_key, model_revision, from_cache, occurrences, collapsed, hour, last_seen)
-VALUES (%(host)s, %(agent_id)s, %(source)s, %(log_timestamp)s, %(template_id)s, %(template)s,
-        %(message)s, %(score)s, %(threshold)s, %(model_key)s, %(model_revision)s, %(from_cache)s,
-        %(occurrences)s, TRUE, date_trunc('hour', now()), now())
+     model_key, model_revision, from_cache, occurrences, collapsed, hour, last_seen,
+     anomaly_id, ingested_at, analyzed_at)
+SELECT %(host)s, %(agent_id)s, %(source)s, %(log_timestamp)s, %(template_id)s, %(template)s,
+       %(message)s, %(score)s, %(threshold)s, %(model_key)s, %(model_revision)s, %(from_cache)s,
+       %(occurrences)s, TRUE, date_trunc('hour', now()), now(),
+       %(anomaly_id)s, %(ingested_at)s, %(analyzed_at)s
+-- A replayed batch finds the row it already wrote and adds nothing. ON CONFLICT
+-- takes one arbiter index, so it cannot also cover anomaly_id; without this a
+-- replay that crosses the hour would violate that index and fail forever.
+WHERE NOT EXISTS (SELECT 1 FROM anomalies WHERE anomaly_id = %(anomaly_id)s)
 ON CONFLICT (template_id, host, hour, model_key, model_revision) WHERE collapsed
 DO UPDATE SET
+    -- anomaly_id and both instants stay those of the first occurrence.
     occurrences = anomalies.occurrences + EXCLUDED.occurrences,
     last_seen   = now(),
     -- Keep the worst score seen, not the most recent. A group summarised by
@@ -111,10 +128,35 @@ SET count         = template_counts.count + EXCLUDED.count,
 INSERT_ANOMALY = """
 INSERT INTO anomalies
     (host, agent_id, source, log_timestamp, template_id, template, message, score, threshold,
-     model_key, model_revision, from_cache, occurrences, collapsed, hour, last_seen)
+     model_key, model_revision, from_cache, occurrences, collapsed, hour, last_seen,
+     anomaly_id, ingested_at, analyzed_at)
 VALUES (%(host)s, %(agent_id)s, %(source)s, %(log_timestamp)s, %(template_id)s, %(template)s,
         %(message)s, %(score)s, %(threshold)s, %(model_key)s, %(model_revision)s, %(from_cache)s,
-        1, FALSE, date_trunc('hour', now()), now())
+        1, FALSE, date_trunc('hour', now()), now(),
+        %(anomaly_id)s, %(ingested_at)s, %(analyzed_at)s)
+ON CONFLICT (anomaly_id) DO NOTHING
+"""
+
+# Analysis latency of every scored record, not only the flagged ones. One row
+# per (minute, spool batch) and insert-only, so replaying a batch cannot count
+# its samples twice. The bridge sums a minute's rows; `id` is its cursor.
+LATENCY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS latency_samples (
+    id            BIGSERIAL        UNIQUE,
+    minute        TIMESTAMPTZ      NOT NULL,
+    batch         TEXT             NOT NULL,
+    count         BIGINT           NOT NULL,
+    sum_ms        DOUBLE PRECISION NOT NULL,
+    max_ms        DOUBLE PRECISION NOT NULL,
+    bucket_counts BIGINT[]         NOT NULL,
+    PRIMARY KEY (minute, batch)
+)
+"""
+
+INSERT_LATENCY = """
+INSERT INTO latency_samples (minute, batch, count, sum_ms, max_ms, bucket_counts)
+VALUES (%(minute)s, %(batch)s, %(count)s, %(sum_ms)s, %(max_ms)s, %(bucket_counts)s)
+ON CONFLICT (minute, batch) DO NOTHING
 """
 
 
@@ -134,6 +176,8 @@ class Store:
                 for statement in ANOMALIES_COLUMNS:
                     cursor.execute(statement)
                 cursor.execute(ANOMALIES_GROUP_INDEX)
+                cursor.execute(ANOMALIES_ID_INDEX)
+                cursor.execute(LATENCY_SCHEMA)
                 cursor.execute(TEMPLATE_COUNTS_SCHEMA)
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS anomalies_detected_at_idx ON anomalies (detected_at DESC)"
@@ -207,13 +251,13 @@ class Store:
             connection.commit()
         return dropped
 
-    def write(self, anomalies: list[dict], counters: list[dict]) -> None:
+    def write(self, anomalies: list[dict], counters: list[dict], latency: list[dict] = ()) -> None:
         """One transaction for all of it. Counters and anomalies must not diverge.
 
         If the anomaly rows land and the counters do not, the dashboard shows
         anomalies against an hour that claims to have seen no traffic.
         """
-        if not anomalies and not counters:
+        if not anomalies and not counters and not latency:
             return
 
         grouped = [row for row in anomalies if row.get("collapsed", True)]
@@ -230,4 +274,6 @@ class Store:
                     cursor.executemany(INSERT_ANOMALY, individual)
                 if counters:
                     cursor.executemany(UPSERT_COUNT, counters)
+                if latency:
+                    cursor.executemany(INSERT_LATENCY, latency)
             connection.commit()

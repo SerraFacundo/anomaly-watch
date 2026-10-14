@@ -1,5 +1,5 @@
 # Local multi-node demo: five FluentBit agents, a traffic generator and the
-# bridge to the web app, on top of the main stack, all on one machine. Use
+# bridge's link to the web app, on top of the main stack, all on one machine. Use
 # through deploy/demo/demo.sh, which creates the certificate, the agent tokens
 # and the app credentials this file expects.
 
@@ -49,37 +49,20 @@ services:
     <<: *agent
     environment: {NODE: mail1, AGENT_TOKEN: "${TOKEN_MAIL1:?run deploy/demo/demo.sh up}"}
 
-  # Pipeline -> web app: anomalies to POST /api/v1/pipeline/anomalies, agent
-  # last_seen to each collector's heartbeat. The ingest image already carries
-  # psycopg; the script is mounted rather than baked in.
+  # The bridge itself is in docker-compose.yml, under the profile demo.sh turns
+  # on. What the demo adds: the app's network, the collector credentials for the
+  # heartbeats, and the revision of the weights demo.sh pins.
   bridge:
-    build:
-      context: .
-      dockerfile: services/ingest/Dockerfile
-    command: ["python", "-u", "/app/services/bridge/bridge.py"]
     environment:
-      BRIDGE_DSN: "postgresql://anomaly:anomaly@postgres:5432/anomaly_watch"
-      # The app's API by its service name, on the app's own network (below).
-      BRIDGE_APP_URL: "${APP_API_URL:-http://api:8080}"
-      # Checked by demo.sh before `up`; empty here so attack, watch and down load
-      # this file without it.
-      BRIDGE_PIPELINE_TOKEN: "${PIPELINE_SERVICE_TOKEN:-}"
       BRIDGE_CREDENTIALS: /creds/app-credentials.env
-      BRIDGE_STATE: /state/cursor
-      # The detector loads from a local directory and reports revision "local".
-      # These are the weights demo.sh pins, so this is what the app should show.
       BRIDGE_MODEL_REVISION: "${MODEL_REVISION:-e1d3703d90af061aae46c40d4d01425679a6e7b2}"
     volumes:
-      - ./services/bridge:/app/services/bridge:ro,z
       - ./deploy/demo/app-credentials.env:/creds/app-credentials.env:ro,z
-      - bridge-state:/state
-    # Both networks: Postgres on this one, the app's API on the app's. Through a
+    # The app's API by its service name, on the app's own network. Through a
     # shared network rather than the host's published port, which rootless podman
     # does not reliably route back into a container.
-    networks: [anomaly-watch, app]
-    depends_on:
-      postgres:
-        condition: service_healthy
+    networks:
+      app: {}
 
 networks:
   # The default network of the app stack, which demo.sh runs as project aw-app.
@@ -91,4 +74,3 @@ networks:
 volumes:
   demo-logs:
   agent-buffers:
-  bridge-state:

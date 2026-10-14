@@ -6,13 +6,22 @@ una sola máquina. `db1` y `mail1` tienen problemas de baja intensidad de fondo;
 los otros tres están sanos.
 
 ```
-pipeline (postgres: anomalies, agents) ──bridge──> app: POST /api/v1/pipeline/anomalies
-                                                    app: POST /api/v1/collectors/{code}/heartbeat
+pipeline (postgres: anomalies,       ──bridge──> app: POST /api/v1/pipeline/anomalies
+          latency_samples, agents)                app: POST /api/v1/pipeline/latency-windows
+                                                  app: POST /api/v1/collectors/{code}/heartbeat
 ```
 
 El puente (`services/bridge/bridge.py`) es lo que conecta las dos mitades: manda
-cada anomalía nueva a la app, que abre las alertas, y traduce "este agente
-entregó logs" en el heartbeat de su collector, que pone el nodo online.
+cada anomalía nueva a la app, que abre las alertas, con el instante en que el
+lote entró y el instante en que se analizó; manda la latencia de análisis de
+todo lo que se puntuó, en ventanas de un minuto, que es lo que alimenta la KPI
+de tiempo de respuesta; y traduce "este agente entregó logs" en el heartbeat de
+su collector, que pone el nodo online.
+
+El servicio está en `docker-compose.yml` bajo el perfil `bridge`, que `demo.sh`
+activa. Guarda hasta dónde entregó en la base del pipeline (tabla
+`bridge_cursors`), así que reiniciarlo no reenvía ni saltea nada, y si la app
+está caída o rechaza un reporte entero (400) se queda en ese punto y reintenta.
 
 ```
 loggen ──escribe──> /logs/<nodo>/*.log ──tail──> agent-<nodo> (FluentBit, buffer en disco)
@@ -86,7 +95,7 @@ deploy/demo/demo.sh reset               # borra volúmenes, tokens y credenciale
 ```
 
 Los logs del puente dicen qué mandó y qué respondió la app:
-`podman compose -f docker-compose.yml -f deploy/demo/compose.demo.yml logs -f bridge`.
+`deploy/demo/demo.sh logs bridge`.
 
 Con Docker en vez de Podman: `COMPOSE="docker compose" deploy/demo/demo.sh up`.
 

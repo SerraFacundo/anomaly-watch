@@ -21,6 +21,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 SPOOL_SUFFIX = ".jsonl"
@@ -143,6 +144,18 @@ class Spool:
             except OSError:
                 pass
         return removed
+
+
+def received_at(path: Path) -> datetime | None:
+    """When `append` took the batch: the `time_ns` field of its name, in UTC.
+
+    None for a name `append` did not write, so the caller can fall back instead
+    of failing a batch over its filename.
+    """
+    try:
+        return datetime.fromtimestamp(int(path.stem.split("-")[1]) / 1e9, UTC)
+    except (IndexError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _records_in_name(path: Path) -> int:

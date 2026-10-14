@@ -153,6 +153,37 @@ services:
     depends_on:
       - ingest
 
+  # Pipeline -> web app: anomalies, latency windows and collector heartbeats
+  # (services/bridge/bridge.py). Behind a profile because the app is a separate
+  # stack: without `--profile bridge` this one comes up and runs on its own.
+  # The ingest image already carries psycopg and services/common; the script is
+  # mounted rather than baked in.
+  bridge:
+    profiles: [bridge]
+    build:
+      context: .
+      dockerfile: services/ingest/Dockerfile
+    command: ["python", "-u", "/app/services/bridge/bridge.py"]
+    environment:
+      BRIDGE_DSN: "postgresql://anomaly:anomaly@postgres:5432/anomaly_watch"
+      BRIDGE_APP_URL: "${APP_API_URL:-http://api:8080}"
+      # The app's PIPELINE_SERVICE_TOKEN. Empty here so commands that do not
+      # start the bridge still load this file.
+      BRIDGE_PIPELINE_TOKEN: "${PIPELINE_SERVICE_TOKEN:-}"
+      # Fixed across restarts: the app keys latency windows by it.
+      BRIDGE_INSTANCE_ID: "${BRIDGE_INSTANCE_ID:-pipeline}"
+      # The detector loads from a local directory and reports revision "local";
+      # set this to the revision the app should show instead.
+      BRIDGE_MODEL_REVISION: "${MODEL_REVISION:-}"
+    volumes:
+      - ./services/bridge:/app/services/bridge:ro,z
+    # Mapping form for the same reason as nginx: the demo overlay adds a network.
+    networks:
+      anomaly-watch: {}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   spool:

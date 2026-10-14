@@ -18,19 +18,30 @@ from __future__ import annotations
 
 import logging
 import sys
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "services"))
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 sys.path.insert(0, str(REPO_ROOT / "ml" / "eval"))
 
 from baselines import _SEVERITY_PATTERN  # noqa: E402
 from cache import ScoreCache, needs_bypass  # noqa: E402
+from common.latency import BUCKETS, bucket_of  # noqa: E402
 
 logger = logging.getLogger("collector.pipeline")
+
+# Fixed, so a spool batch and a position in it always give the same anomaly_id:
+# replaying the batch after a crash finds the rows it already wrote.
+ANOMALY_NAMESPACE = uuid.UUID("b1f7c0de-5a3e-4c0b-8d2f-6e9a41c7d3a5")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 # Never shed, whatever the load. An overloaded pipeline that drops the errors is
 # worse than one that falls behind on everything equally: it goes quiet exactly
@@ -154,6 +165,8 @@ class ShedPolicy:
 class Outcome:
     anomalies: list[dict]
     counters: list[dict]
+    # One row per minute in which this batch had records scored.
+    latency: list[dict] = field(default_factory=list)
 
 
 class Pipeline:
@@ -175,11 +188,24 @@ class Pipeline:
         self.model_revision = "unknown"
         self.threshold = 0.5
 
-    def process(self, wire_records: list[dict]) -> Outcome:
+    def process(
+        self, wire_records: list[dict], batch: str | None = None, ingested_at: datetime | None = None
+    ) -> Outcome:
+        """`batch` is the spool batch's name and `ingested_at` when ingest took it.
+
+        Both come from the spool file, so a replay passes the same two values and
+        gets the same anomaly ids. Without them (tests, ad hoc runs) the batch
+        gets a name of its own, never a shared one: two batches under one name
+        would have the second one's anomalies dropped as replays of the first.
+        """
+        batch = batch or f"adhoc-{uuid.uuid4().hex}"
+        ingested_at = ingested_at or _now()
         parsed: list[dict] = []
         counter_rows: dict[tuple, dict] = {}
 
-        for wire in wire_records:
+        # Position in the spool file, counted before anything is discarded, so
+        # it does not move when the shed stage differs on a replay.
+        for position, wire in enumerate(wire_records):
             record = self._parser.parse(wire.get("message", ""), host=wire.get("host"))
             if record is None:
                 self.counters.discard("unparseable")
@@ -193,6 +219,7 @@ class Pipeline:
                     "agent_id": wire.get("agent_id"),
                     "source": wire.get("source"),
                     "log_timestamp": wire.get("log_timestamp") or payload.get("timestamp"),
+                    "_position": position,
                 }
             )
 
@@ -218,11 +245,19 @@ class Pipeline:
 
             parsed.append(payload)
 
-        anomalies = self._score(parsed, counter_rows)
-        return Outcome(anomalies=anomalies, counters=list(counter_rows.values()))
+        resolved = self._score(parsed)
+        # A clock stepped backwards between ingest and here would put the
+        # analysis before the ingestion, and the app rejects that anomaly.
+        resolved = [(*rest, max(analyzed_at, ingested_at)) for *rest, analyzed_at in resolved]
+        return Outcome(
+            anomalies=self._to_rows(resolved, counter_rows, batch, ingested_at),
+            counters=list(counter_rows.values()),
+            latency=_latency_rows(resolved, batch, ingested_at),
+        )
 
-    def _score(self, records: list[dict], counter_rows: dict) -> list[dict]:
-        resolved: list[tuple[dict, float, bool, bool]] = []  # record, score, is_anomaly, from_cache
+    def _score(self, records: list[dict]) -> list[tuple[dict, float, bool, bool, datetime]]:
+        # record, score, is_anomaly, from_cache, analyzed_at
+        resolved: list[tuple[dict, float, bool, bool, datetime]] = []
 
         # One representative per template for cache misses, and every bypassed
         # record on its own. Without the grouping the cache would only work
@@ -245,7 +280,7 @@ class Pipeline:
             )
             if outcome == "hit":
                 self.counters.from_cache += 1
-                resolved.append((record, entry.score, entry.is_anomaly, True))
+                resolved.append((record, entry.score, entry.is_anomaly, True, _now()))
             elif outcome == "miss" and record.get("template_id") is not None and self._cache.enabled:
                 groups.setdefault(record["template_id"], []).append(record)
             else:
@@ -259,7 +294,7 @@ class Pipeline:
                 individual.append(record)
 
         representatives = [members[0] for members in groups.values()]
-        for record, score, is_anomaly in self._call_detector(representatives + individual):
+        for record, score, is_anomaly, analyzed_at in self._call_detector(representatives + individual):
             template_id = record.get("template_id")
             members = groups.get(template_id) if template_id else None
             if members and members[0] is record:
@@ -272,25 +307,35 @@ class Pipeline:
                     if reused:
                         self.counters.from_cache += 1
                         self._cache.stats.coalesced += 1
-                    resolved.append((member, score, is_anomaly, reused))
+                    resolved.append((member, score, is_anomaly, reused, analyzed_at))
             else:
-                resolved.append((record, score, is_anomaly, False))
+                resolved.append((record, score, is_anomaly, False, analyzed_at))
 
-        return self._to_rows(resolved, counter_rows)
+        return resolved
 
     def _call_detector(self, records: list[dict]):
-        """Batch through `detector-service`, yielding (record, score, is_anomaly)."""
+        """Batch through `detector-service`, yielding (record, score, is_anomaly, analyzed_at)."""
         for start in range(0, len(records), self._settings.batch_size):
             chunk = records[start : start + self._settings.batch_size]
             response = self._scorer(chunk)
+            # Stamped per detector call, not per spool batch: a batch of 1000
+            # takes many calls, and one stamp at the end would charge the last
+            # call's wait to every record of the first.
+            analyzed_at = _now()
             self.model_key = response["model_key"]
             self.model_revision = response["model_revision"]
             self.threshold = response["threshold"]
             self.counters.scored += len(chunk)
             for record, result in zip(chunk, response["results"], strict=True):
-                yield record, result["score"], result["is_anomaly"]
+                yield record, result["score"], result["is_anomaly"], analyzed_at
 
-    def _to_rows(self, resolved: list[tuple[dict, float, bool, bool]], counter_rows: dict) -> list[dict]:
+    def _to_rows(
+        self,
+        resolved: list[tuple[dict, float, bool, bool, datetime]],
+        counter_rows: dict,
+        batch: str,
+        ingested_at: datetime,
+    ) -> list[dict]:
         """Turn scored records into rows, grouping repeats of one template.
 
         A mis-scored template is not rare and it is not cheap: one of them
@@ -301,7 +346,7 @@ class Pipeline:
         anomalies: list[dict] = []
         grouped: dict[tuple, dict] = {}
 
-        for record, score, is_anomaly, from_cache in resolved:
+        for record, score, is_anomaly, from_cache, analyzed_at in resolved:
             if not is_anomaly:
                 continue
             self.counters.anomalies += 1
@@ -324,6 +369,9 @@ class Pipeline:
                 "from_cache": from_cache,
                 "occurrences": 1,
                 "collapsed": True,
+                "anomaly_id": uuid.uuid5(ANOMALY_NAMESPACE, f"{batch}/{record['_position']}"),
+                "ingested_at": ingested_at,
+                "analyzed_at": analyzed_at,
             }
 
             if record.pop("_bypassed", False) or record.get("template_id") is None:
@@ -344,3 +392,26 @@ class Pipeline:
 
         self.counters.anomaly_rows += len(anomalies)
         return anomalies
+
+
+def _latency_rows(resolved: list[tuple], batch: str, ingested_at: datetime) -> list[dict]:
+    """One sample per scored record, grouped by the minute its analysis ended.
+
+    Every record that got a score counts, flagged or not and from the model or
+    the cache: the stage being measured is the analysis, not the anomalies. Shed
+    and unparseable records never reach `resolved`, so they add no sample.
+    """
+    rows: dict[datetime, dict] = {}
+    for *_, analyzed_at in resolved:
+        minute = analyzed_at.replace(second=0, microsecond=0)
+        row = rows.setdefault(
+            minute,
+            {"minute": minute, "batch": batch, "count": 0, "sum_ms": 0.0, "max_ms": 0.0,
+             "bucket_counts": [0] * BUCKETS},
+        )
+        elapsed_ms = (analyzed_at - ingested_at).total_seconds() * 1000
+        row["count"] += 1
+        row["sum_ms"] += elapsed_ms
+        row["max_ms"] = max(row["max_ms"], elapsed_ms)
+        row["bucket_counts"][bucket_of(elapsed_ms)] += 1
+    return list(rows.values())
