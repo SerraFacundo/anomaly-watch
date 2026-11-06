@@ -1,4 +1,4 @@
-"""log-collector — spool in, anomalies out.
+"""log-collector — queued logs in, anomalies out.
 
 Single replica, and not by accident. `tools/parser.py` wraps Drain3's
 TemplateMiner, which learns templates online: two replicas build two divergent
@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from archive import RawArchive  # noqa: E402
 from cache import ScoreCache  # noqa: E402
+from common.redis_queue import QueueUnavailableError, RedisLogQueue, build_queue  # noqa: E402
 from common.spool import Spool  # noqa: E402
 from config import Settings  # noqa: E402
 from parser import LogParser  # noqa: E402
@@ -59,47 +60,52 @@ def make_scorer(endpoint: str, timeout_s: float = 120.0):
 
 
 async def run_loop() -> None:
-    """Drain the spool forever.
+    """Drain the Redis queue (or disk spool) forever in greedy batches.
 
-    A batch is deleted only after it is fully processed and persisted. A crash
-    mid-batch therefore replays it rather than losing it: at-least-once, and the
+    Each iteration claims whatever is available immediately up to
+    `settings.queue_batch_size` (never waiting to fill a batch) and acknowledges
+    only after scoring and Postgres persistence succeed. A crash mid-batch
+    therefore replays `inflight` rather than losing it: at-least-once, and the
     duplicate costs one cache hit.
     """
     settings: Settings = _state["settings"]  # type: ignore[assignment]
-    spool: Spool = _state["spool"]  # type: ignore[assignment]
+    spool: Spool | RedisLogQueue = _state["spool"]  # type: ignore[assignment]
     pipeline: Pipeline = _state["pipeline"]  # type: ignore[assignment]
     store: Store = _state["store"]  # type: ignore[assignment]
     archive: RawArchive = _state["archive"]  # type: ignore[assignment]
 
     while True:
         try:
-            pending = spool.pending()
+            records = await asyncio.to_thread(
+                spool.claim_batch,
+                settings.queue_batch_size,
+                settings.poll_interval_s,
+            )
 
             # Recomputed even when there is nothing to do, so a drained backlog
             # drops the stage back immediately. Updating it only when work
             # arrives would leave /status reporting "shedding" through an idle
             # period, and an operator reading that cannot tell a quiet pipeline
             # from one that is throwing records away.
-            depth = spool.stats().records
+            depth = (await asyncio.to_thread(spool.stats)).records
             previous_stage = pipeline.policy.stage
             stage = pipeline.policy.update_depth(depth)
             if stage != previous_stage:
-                logger.warning("Shed stage %d -> %d at spool depth %d", previous_stage, stage, depth)
+                logger.warning("Shed stage %d -> %d at queue depth %d", previous_stage, stage, depth)
 
-            if not pending:
-                await asyncio.sleep(settings.poll_interval_s)
+            if not records:
                 continue
 
-            for path in pending[:20]:
-                records = spool.read(path)
-                archive.write(records)
-                outcome = await asyncio.to_thread(pipeline.process, records)
-                await asyncio.to_thread(store.write, outcome.anomalies, outcome.counters)
-                spool.done(path)
-                _state["last_batch_at"] = time.time()
+            archive.write(records)
+            outcome = await asyncio.to_thread(pipeline.process, records)
+            await asyncio.to_thread(store.write, outcome.anomalies, outcome.counters)
+            await asyncio.to_thread(spool.ack_batch)
+            _state["last_batch_at"] = time.time()
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001
             # Never let the loop die. A collector that exits on one bad batch
-            # stops the whole pipeline, and the spool then grows until agents
+            # stops the whole pipeline, and the queue then grows until agents
             # are told to hold, which looks like a network problem.
             logger.exception("Collector loop error; retrying")
             await asyncio.sleep(2.0)
@@ -116,6 +122,15 @@ async def lifespan(app: FastAPI):
     # historical anomaly rows stop being interpretable.
     parser = LogParser(persistence_path=settings.drain_state_path)
 
+    spool = build_queue(
+        settings.queue_backend,
+        spool_dir=settings.spool_dir,
+        redis_url=settings.redis_url,
+        redis_queue_key=settings.redis_queue_key,
+    )
+    if not spool.is_ready():
+        raise RuntimeError(f"Cannot reach log queue backend ({settings.queue_backend})")
+
     cache = ScoreCache(
         max_entries=settings.cache_max_entries,
         ttl_s=settings.cache_ttl_s,
@@ -127,7 +142,7 @@ async def lifespan(app: FastAPI):
     archive_dir = os.environ.get("COLLECTOR_RAW_ARCHIVE_DIR") or None
     _state.update(
         {
-            "spool": Spool(settings.spool_dir),
+            "spool": spool,
             "parser": parser,
             "cache": cache,
             "store": store,
@@ -139,9 +154,13 @@ async def lifespan(app: FastAPI):
     )
 
     task = asyncio.create_task(run_loop())
+    target = settings.redis_url if settings.queue_backend == "redis" else str(settings.spool_dir)
     logger.info(
-        "log-collector ready. Spool %s, cache %s, Drain3 state %s",
-        settings.spool_dir,
+        "log-collector ready. Queue %s (%s, max claim %d, score batch %d), cache %s, Drain3 state %s",
+        settings.queue_backend,
+        target,
+        settings.queue_batch_size,
+        settings.batch_size,
         "on" if settings.cache_enabled else "OFF",
         settings.drain_state_path,
     )
@@ -160,7 +179,8 @@ def healthz() -> dict:
 
 @app.get("/readyz")
 def readyz() -> JSONResponse:
-    ready = "pipeline" in _state
+    spool: Spool | RedisLogQueue | None = _state.get("spool")  # type: ignore[assignment]
+    ready = "pipeline" in _state and spool is not None and spool.is_ready()
     return JSONResponse(
         status_code=status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"status": "ready" if ready else "not-ready"},
@@ -179,10 +199,22 @@ def status_report() -> dict:
     if pipeline is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Not started.")
     settings: Settings = _state["settings"]  # type: ignore[assignment]
-    spool: Spool = _state["spool"]  # type: ignore[assignment]
-    stats = spool.stats()
+    spool: Spool | RedisLogQueue = _state["spool"]  # type: ignore[assignment]
+    try:
+        stats = spool.stats()
+    except QueueUnavailableError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return {
         "spool": {"files": stats.files, "records": stats.records, "bytes": stats.bytes},
+        "queue": {
+            "backend": settings.queue_backend,
+            "pending_records": stats.pending_records,
+            "inflight_records": stats.inflight_records,
+            "records": stats.records,
+            "bytes": stats.bytes,
+            "max_claim_batch": settings.queue_batch_size,
+            "max_score_batch": settings.batch_size,
+        },
         "shed_stage": pipeline.policy.stage,
         "shed_thresholds": {"sample_at": settings.shed_sample_at, "level_at": settings.shed_level_at},
         "cache": _state["cache"].snapshot(settings.raw_rate),  # type: ignore[union-attr]

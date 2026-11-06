@@ -69,7 +69,7 @@ graph TB
 
         subgraph "Pipeline Services"
             INGEST["ingest-service"]
-            SPOOL[("spool volume")]
+            REDIS[("Redis queue (AOF)")]
             COLLECTOR["log-collector (Drain3 + score cache)"]
             DETECTOR["detector-service"]
         end
@@ -95,8 +95,8 @@ graph TB
     FBN -- "HTTPS batches" --> NGINX
 
     NGINX -- "POST /ingest" --> INGEST
-    INGEST -- "durable append" --> SPOOL
-    SPOOL -- "consume" --> COLLECTOR
+    INGEST -- "RPUSH (atomic)" --> REDIS
+    REDIS -- "claim_batch (1..128) + ACK" --> COLLECTOR
     COLLECTOR -- "POST /score (cache misses only)" --> DETECTOR
     DETECTOR -- "scores" --> COLLECTOR
 
@@ -135,6 +135,7 @@ graph TB
 | Service | Technology | Responsibility | Default Port |
 |---------|-----------|---------------|-------------|
 | **postgres** | PostgreSQL + pgvector extension | Primary data store for templates, anomalies, alerts, users, and ATT&CK embeddings | 5432 |
+| **redis** | Redis 7 (`--appendonly yes`) | Durable FIFO log queue (`pending` + `inflight` lists) decoupling `ingest-service` from the background `log-collector` worker | 6379 |
 | **nginx** | Nginx | TLS termination for the agent fleet, reverse proxy, static file serving for web-app. The only host-exposed service in the stack | 80 / 443 |
 | **ollama** | Ollama | Local LLM runtime for RAG inference. Runs as container, serves model via HTTP API | 11434 |
 
@@ -151,8 +152,8 @@ graph TB
 
 | Service | Technology | Responsibility | Default Port |
 |---------|-----------|---------------|-------------|
-| **ingest-service** | Python / FastAPI | HTTP entry point for agents. Authenticates the agent, validates against the wire contract, and spools the batch durably. Acknowledges only once the batch is on disk | 8004 (internal) |
-| **log-collector** | Python / Drain3 | Consumes the spool, extracts templates with Drain3, resolves scores through the template cache, calls `detector-service` for misses, persists anomalies and hourly counters. Owns the drop policy | 8005 (internal, status only) |
+| **ingest-service** | Python / FastAPI | HTTP entry point for agents. Authenticates the agent, validates against the wire contract, and enqueues the batch into Redis (or fallback disk spool). Acknowledges only once durably queued | 8004 (internal) |
+| **log-collector** | Python / Drain3 | Background worker (`run_loop`) that claims batches (`1..128`) from Redis, extracts templates with Drain3, resolves scores through the template cache, calls `detector-service` (`1..32`) for misses, persists anomalies and hourly counters, and ACKs `inflight`. Owns the drop policy | 8005 (internal, status only) |
 | **detector-service** | Python / FastAPI + transformers | Serves the anomaly model over HTTP (`POST /score`). CPU inference. The one component that loads model weights | 8003 (internal) |
 
 > **`log-collector` runs as exactly one replica.** Drain3 learns templates
@@ -194,8 +195,8 @@ graph TB
 flowchart LR
     FB["FluentBit (PyME machines)<br/>512MB disk buffer"] -->|"HTTPS batches"| NG["Nginx (TLS)"]
     NG -->|"POST /ingest"| IN["ingest-service<br/>authenticate + validate"]
-    IN -->|"fsync + rename, then ack"| SP[("spool volume")]
-    SP -->|consume| LC["log-collector (Drain3)"]
+    IN -->|"RPUSH, then 202"| SP[("Redis queue (AOF)")]
+    SP -->|"claim_batch (1..128) + ACK"| LC["log-collector worker (Drain3)"]
     LC -->|"cache hit"| SC{{"template score cache"}}
     LC -->|"cache miss, batched"| DS["detector-service (CPU transformer)"]
     DS -->|scores| LC
@@ -518,8 +519,9 @@ All services (except FluentBit agents) run in a single Docker Compose stack on t
 |---------|-------|-------------|--------|-------|
 | **nginx** | nginx:alpine | 80, 443 | built | TLS termination for agents. The only host-exposed service |
 | **postgres** | pgvector/pgvector:pg16 | 5432 (internal) | built | pgvector extension pre-installed |
-| **ingest-service** | custom (Python/FastAPI) | 8004 (internal) | built | Agent endpoint. Writes to the spool volume |
-| **log-collector** | custom (Python/Drain3) | 8005 (internal, status only) | built | **Single replica.** Drain3 state on a volume |
+| **redis** | redis:7-alpine | 6379 (internal) | built | Durable log queue (`--appendonly yes`, `redis-data` volume) |
+| **ingest-service** | custom (Python/FastAPI) | 8004 (internal) | built | Agent endpoint. Enqueues validated batches into Redis |
+| **log-collector** | custom (Python/Drain3) | 8005 (internal, status only) | built | **Single replica** background worker. Drain3 state on a volume |
 | **detector-service** | custom (Python/FastAPI) | 8003 (internal) | built | CPU inference. Model cache mounted read-only; `HF_HUB_OFFLINE=1` |
 | **ollama** | ollama/ollama | 11434 (internal) | planned | LLM model runtime |
 | **api** | custom (Python/FastAPI) | 8000 (internal) | planned | Behind Nginx |

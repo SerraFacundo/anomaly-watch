@@ -2,10 +2,9 @@
 #
 # Ollama, api, rag-engine and notifier are the target end state; they are not
 # here because they have no implementation yet and an empty container proves
-# nothing. There is no Kafka and there will not be one — see
-# openspec/changes/brokerless-log-transport/design.md D1.
+# nothing.
 #
-# Agent path:  FluentBit -> nginx (TLS) -> ingest-service -> spool -> log-collector
+# Agent path:  FluentBit -> nginx (TLS) -> ingest-service -> redis queue -> log-collector -> detector-service -> postgres
 # Offline path: log file -> tools/replay.py (Drain3) -> detector-service -> postgres
 #
 # Before first run, populate the model cache on the host:
@@ -28,8 +27,22 @@ services:
       timeout: 5s
       retries: 5
     networks: [anomaly-watch]
-    # Internal only. Nothing but the future Nginx should ever be host-exposed.
+    # Internal only. Nothing but nginx should ever be host-exposed.
     expose: ["5432"]
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    # Durable AOF persistence so acknowledged batches survive a container restart.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [anomaly-watch]
+    expose: ["6379"]
 
   detector:
     build:
@@ -71,16 +84,14 @@ services:
       dockerfile: services/ingest/Dockerfile
     environment:
       ANOMALY_WATCH_DSN: "postgresql://anomaly:anomaly@postgres:5432/anomaly_watch"
-      INGEST_SPOOL_DIR: /spool
+      QUEUE_BACKEND: "${QUEUE_BACKEND:-redis}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      REDIS_QUEUE_KEY: "${REDIS_QUEUE_KEY:-anomaly_watch:logs}"
       # Sized from the measured detector rate. Backpressure fires below the hard
       # bound so there is still room to absorb an in-flight batch while agents
       # are being told to hold.
       INGEST_SPOOL_MAX_RECORDS: "${INGEST_SPOOL_MAX_RECORDS:-100000}"
       INGEST_BACKPRESSURE_RECORDS: "${INGEST_BACKPRESSURE_RECORDS:-80000}"
-    volumes:
-      # The durability boundary. A batch is acknowledged only once it is here,
-      # so this volume is what makes a 200 mean something to an agent.
-      - spool:/spool
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8004/readyz',timeout=4).status==200 else 1)"]
       interval: 15s
@@ -91,6 +102,8 @@ services:
     expose: ["8004"]
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   collector:
@@ -105,10 +118,15 @@ services:
       replicas: 1
     environment:
       ANOMALY_WATCH_DSN: "postgresql://anomaly:anomaly@postgres:5432/anomaly_watch"
-      COLLECTOR_SPOOL_DIR: /spool
+      QUEUE_BACKEND: "${QUEUE_BACKEND:-redis}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      REDIS_QUEUE_KEY: "${REDIS_QUEUE_KEY:-anomaly_watch:logs}"
+      # Greedy per-cycle Redis drain ceiling (1..128, never waits to fill) and
+      # per-call detector `/score` ceiling (1..32, tuned to modernbert-ft-v3 CPU).
+      COLLECTOR_QUEUE_BATCH_SIZE: "${COLLECTOR_QUEUE_BATCH_SIZE:-128}"
+      COLLECTOR_BATCH_SIZE: "${COLLECTOR_BATCH_SIZE:-32}"
       COLLECTOR_DRAIN_STATE: /state/drain3.state
       COLLECTOR_DETECTOR_ENDPOINT: "http://detector:8003"
-      COLLECTOR_BATCH_SIZE: "${COLLECTOR_BATCH_SIZE:-64}"
       COLLECTOR_CACHE_ENABLED: "${COLLECTOR_CACHE_ENABLED:-1}"
       # 2,409 templates covered 119k lines of real journal, so 10k has room.
       COLLECTOR_CACHE_MAX_ENTRIES: "${COLLECTOR_CACHE_MAX_ENTRIES:-10000}"
@@ -118,14 +136,21 @@ services:
       # scoring, which is the documented default (design.md D7).
       COLLECTOR_RAW_ARCHIVE_DIR: "${COLLECTOR_RAW_ARCHIVE_DIR:-}"
     volumes:
-      - spool:/spool
       # Drain3 state. Without persistence a restart renumbers every template and
       # the historical anomaly rows stop being interpretable.
       - drain-state:/state
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8005/readyz',timeout=4).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks: [anomaly-watch]
     expose: ["8005"]
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       detector:
         condition: service_healthy
@@ -153,7 +178,7 @@ services:
 
 volumes:
   postgres-data:
-  spool:
+  redis-data:
   drain-state:
 
 networks:

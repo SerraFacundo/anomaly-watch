@@ -51,7 +51,7 @@ up() {
 
   if [ ! -f "$TOKENS" ]; then
     # Base compose only: the overlay refuses to load until these tokens exist.
-    $COMPOSE up -d postgres
+    $COMPOSE up -d postgres redis
     until $COMPOSE exec -T postgres pg_isready -U anomaly -d anomaly_watch >/dev/null 2>&1; do sleep 2; done
     tmp=$(mktemp)
     for node in $NODES; do

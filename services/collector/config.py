@@ -42,16 +42,26 @@ class Settings:
     # template and the historical anomaly rows stop being interpretable.
     drain_state_path: Path = REPO_ROOT / "data" / "spool" / "drain3.state"
 
-    # 64 sits between the two measured points (p50 batch-32 is 339ms) and stays
-    # well under the detector's 256 cap.
-    batch_size: int = 64
+    # Inference sub-batch ceiling sent to `POST /score`. Sized from measured
+    # modernbert-ft-v3 CPU latency (~3.0s at 32 records on 2 threads) and
+    # dynamic token padding (`padding=True` up to 256 tokens): beyond 32 on
+    # 2 CPU threads throughput no longer improves while padding waste and
+    # per-request blocking latency grow linearly.
+    batch_size: int = 32
+
+    # Queue backend and greedy per-cycle claim ceiling (1..queue_batch_size,
+    # never waiting to accumulate a full batch).
+    queue_backend: str = "spool"
+    redis_url: str = "redis://redis:6379/0"
+    redis_queue_key: str = "anomaly_watch:logs"
+    queue_batch_size: int = 128
 
     cache_enabled: bool = True
     cache_max_entries: int = 10_000  # 2,409 templates covered 119k lines of real journal
     cache_ttl_s: float = 3600.0
 
-    # Shedding stages, in the order design.md D4 fixes them. Depth is spool
-    # records pending.
+    # Shedding stages, in the order design.md D4 fixes them. Depth is queued
+    # records pending + inflight.
     shed_sample_at: int = 20_000
     shed_level_at: int = 50_000
     sample_one_in: int = 10
@@ -69,7 +79,11 @@ class Settings:
             dsn=os.environ.get("ANOMALY_WATCH_DSN")
             or "postgresql://anomaly:anomaly@postgres:5432/anomaly_watch",
             drain_state_path=Path(os.environ.get("COLLECTOR_DRAIN_STATE", spool.parent / "drain3.state")),
-            batch_size=_int("COLLECTOR_BATCH_SIZE", 64),
+            batch_size=_int("COLLECTOR_BATCH_SIZE", 32),
+            queue_backend=(os.environ.get("QUEUE_BACKEND") or "redis").strip().lower(),
+            redis_url=os.environ.get("REDIS_URL") or "redis://redis:6379/0",
+            redis_queue_key=os.environ.get("REDIS_QUEUE_KEY") or "anomaly_watch:logs",
+            queue_batch_size=_int("COLLECTOR_QUEUE_BATCH_SIZE", 128),
             cache_enabled=_bool("COLLECTOR_CACHE_ENABLED", True),
             cache_max_entries=_int("COLLECTOR_CACHE_MAX_ENTRIES", 10_000),
             cache_ttl_s=_float("COLLECTOR_CACHE_TTL_S", 3600.0),

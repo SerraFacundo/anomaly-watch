@@ -40,6 +40,8 @@ class SpoolStats:
     files: int
     records: int
     bytes: int
+    pending_records: int = 0
+    inflight_records: int = 0
 
 
 class Spool:
@@ -56,6 +58,7 @@ class Spool:
         self.max_records = max_records
         self.directory.mkdir(parents=True, exist_ok=True)
         self._seq = 0
+        self._inflight_path: Path | None = None
 
     # -- writer side -------------------------------------------------------
 
@@ -115,7 +118,33 @@ class Spool:
         """
         path.unlink(missing_ok=True)
 
+    def claim_batch(self, max_records: int = 128, timeout_s: float = 0.5) -> list[dict]:
+        """Claim the oldest pending batch file without deleting it yet."""
+        del max_records  # File spool preserves batch files as written by ingest.
+        if self._inflight_path is not None and self._inflight_path.exists():
+            return self.read(self._inflight_path)
+        self._inflight_path = None
+
+        files = self.pending()
+        if not files and timeout_s > 0:
+            time.sleep(timeout_s)
+            files = self.pending()
+        if not files:
+            return []
+
+        self._inflight_path = files[0]
+        return self.read(self._inflight_path)
+
+    def ack_batch(self) -> None:
+        """Acknowledge and delete the batch previously claimed by `claim_batch`."""
+        if self._inflight_path is not None:
+            self.done(self._inflight_path)
+            self._inflight_path = None
+
     # -- both sides --------------------------------------------------------
+
+    def is_ready(self) -> bool:
+        return self.directory.is_dir()
 
     def stats(self) -> SpoolStats:
         files = self.pending()
@@ -129,7 +158,18 @@ class Spool:
                 # Raced with the reader deleting it. A slightly stale size is
                 # fine; failing a health check over it is not.
                 pass
-        return SpoolStats(files=len(files), records=records, bytes=size)
+        inflight = (
+            _records_in_name(self._inflight_path)
+            if self._inflight_path is not None and self._inflight_path.exists()
+            else 0
+        )
+        return SpoolStats(
+            files=len(files),
+            records=records,
+            bytes=size,
+            pending_records=max(records - inflight, 0),
+            inflight_records=inflight,
+        )
 
     def sweep_temp(self, older_than_s: float = 300.0) -> int:
         """Remove `.tmp` files left by a crash mid-write. Returns how many."""

@@ -41,6 +41,12 @@ class Settings:
     # prompt without doing that.
     token_cache_ttl_s: int = 60
 
+    # Queue backend: `redis` in deployed stacks (`from_env`), `spool` default on
+    # direct dataclass construction so offline file-spool tests stay untouched.
+    queue_backend: str = "spool"
+    redis_url: str = "redis://redis:6379/0"
+    redis_queue_key: str = "anomaly_watch:logs"
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -51,4 +57,7 @@ class Settings:
             dsn=os.environ.get("ANOMALY_WATCH_DSN")
             or "postgresql://anomaly:anomaly@postgres:5432/anomaly_watch",
             token_cache_ttl_s=_int("INGEST_TOKEN_CACHE_TTL_S", 60),
+            queue_backend=(os.environ.get("QUEUE_BACKEND") or "redis").strip().lower(),
+            redis_url=os.environ.get("REDIS_URL") or "redis://redis:6379/0",
+            redis_queue_key=os.environ.get("REDIS_QUEUE_KEY") or "anomaly_watch:logs",
         )
