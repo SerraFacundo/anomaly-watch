@@ -32,6 +32,8 @@ services:
 
   redis:
     image: docker.io/library/redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     # Durable AOF persistence so acknowledged batches survive a container restart.
     # Optional password protection with REDIS_PASSWORD for multi-VM deployments.
     command: >
@@ -44,9 +46,10 @@ services:
       timeout: 5s
       retries: 5
     networks: [anomaly-watch]
-    # Exposed on host for cross-VM connectivity (e.g. ApiModeloClasificador on 172.16.1.4)
+    # Local only by default. deploy/vm/docker-compose.hub.yml publishes it on the
+    # VM's private IP for the web app.
     ports:
-      - "6379:6379"
+      - "${REDIS_BIND:-127.0.0.1}:6379:6379"
 
   detector:
     build:
