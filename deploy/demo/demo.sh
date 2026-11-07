@@ -11,7 +11,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-COMPOSE=${COMPOSE:-podman compose}
+if [ -z "${COMPOSE:-}" ]; then
+  if command -v podman >/dev/null 2>&1; then
+    COMPOSE="podman compose"
+  else
+    COMPOSE="docker compose"
+  fi
+fi
 DEMO="$COMPOSE -f docker-compose.yml -f deploy/demo/compose.demo.yml"
 NODES="web1 web2 auth1"
 TOKENS=deploy/demo/tokens.env

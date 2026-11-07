@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from archive import RawArchive  # noqa: E402
 from cache import ScoreCache  # noqa: E402
+from common.alert_stream import AlertStreamPublisher  # noqa: E402
 from common.redis_queue import QueueUnavailableError, RedisLogQueue, build_queue  # noqa: E402
 from common.spool import Spool  # noqa: E402
 from config import Settings  # noqa: E402
@@ -99,6 +100,9 @@ async def run_loop() -> None:
             archive.write(records)
             outcome = await asyncio.to_thread(pipeline.process, records)
             await asyncio.to_thread(store.write, outcome.anomalies, outcome.counters)
+            publisher = _state.get("alert_publisher")
+            if outcome.anomalies and publisher and getattr(publisher, "enabled", False):
+                await asyncio.to_thread(publisher.publish_batch, outcome.anomalies)  # type: ignore[union-attr]
             await asyncio.to_thread(spool.ack_batch)
             _state["last_batch_at"] = time.time()
         except asyncio.CancelledError:
@@ -140,6 +144,13 @@ async def lifespan(app: FastAPI):
     store.ensure_schema()
 
     archive_dir = os.environ.get("COLLECTOR_RAW_ARCHIVE_DIR") or None
+    alert_publisher = AlertStreamPublisher(
+        redis_url=settings.redis_url,
+        stream_key=settings.redis_alerts_stream_key,
+        maxlen=settings.alerts_stream_maxlen,
+        enabled=settings.alerts_stream_enabled and settings.queue_backend == "redis",
+        client=getattr(spool, "_client", None),
+    )
     _state.update(
         {
             "spool": spool,
@@ -148,6 +159,7 @@ async def lifespan(app: FastAPI):
             "store": store,
             "archive": RawArchive(Path(archive_dir) if archive_dir else None),
             "pipeline": Pipeline(parser, cache, settings, make_scorer(settings.detector_endpoint)),
+            "alert_publisher": alert_publisher,
             "started_at": time.time(),
             "last_batch_at": None,
         }
@@ -226,5 +238,10 @@ def status_report() -> dict:
         },
         "templates": _state["parser"].template_count,  # type: ignore[union-attr]
         "raw_archive_enabled": _state["archive"].enabled,  # type: ignore[union-attr]
+        "alerts_stream": {
+            "enabled": getattr(_state.get("alert_publisher"), "enabled", False),
+            "key": settings.redis_alerts_stream_key,
+            "published_total": getattr(_state.get("alert_publisher"), "published_total", 0),
+        },
         "last_batch_at": _state.get("last_batch_at"),
     }

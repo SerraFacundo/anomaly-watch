@@ -70,6 +70,11 @@ class Settings:
     raw_rate: float = 29.6  # ml/eval/results/modernbert-ft.json, for the effective-rate projection
     poll_interval_s: float = 0.5
 
+    # Redis Streams alert publisher settings for downstream business API
+    alerts_stream_enabled: bool = True
+    redis_alerts_stream_key: str = "anomaly_watch:alerts"
+    alerts_stream_maxlen: int = 10_000
+
     @classmethod
     def from_env(cls) -> "Settings":
         spool = Path(os.environ.get("COLLECTOR_SPOOL_DIR", REPO_ROOT / "data" / "spool"))
@@ -93,4 +98,7 @@ class Settings:
             hot_template_hits=_int("COLLECTOR_HOT_TEMPLATE_HITS", 50),
             raw_rate=_float("COLLECTOR_RAW_RATE", 29.6),
             poll_interval_s=_float("COLLECTOR_POLL_INTERVAL_S", 0.5),
+            alerts_stream_enabled=_bool("COLLECTOR_ALERTS_STREAM_ENABLED", True),
+            redis_alerts_stream_key=os.environ.get("COLLECTOR_ALERTS_STREAM_KEY") or "anomaly_watch:alerts",
+            alerts_stream_maxlen=_int("COLLECTOR_ALERTS_STREAM_MAXLEN", 10_000),
         )
