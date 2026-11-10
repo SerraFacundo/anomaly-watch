@@ -70,6 +70,11 @@ class Settings:
     raw_rate: float = 29.6  # ml/eval/results/modernbert-ft.json, for the effective-rate projection
     poll_interval_s: float = 0.5
 
+    # Redis Streams alert publisher settings for downstream business API
+    alerts_stream_enabled: bool = True
+    redis_alerts_stream_key: str = "anomaly_watch:alerts"
+    alerts_stream_maxlen: int = 10_000
+
     # Node heartbeats to AnomalyWatch (services/collector/heartbeat.py). Off
     # unless all three are set: a collector with no backend to talk to is a
     # supported deployment, not a misconfiguration.
@@ -108,6 +113,9 @@ class Settings:
             hot_template_hits=_int("COLLECTOR_HOT_TEMPLATE_HITS", 50),
             raw_rate=_float("COLLECTOR_RAW_RATE", 29.6),
             poll_interval_s=_float("COLLECTOR_POLL_INTERVAL_S", 0.5),
+            alerts_stream_enabled=_bool("COLLECTOR_ALERTS_STREAM_ENABLED", True),
+            redis_alerts_stream_key=os.environ.get("COLLECTOR_ALERTS_STREAM_KEY") or "anomaly_watch:alerts",
+            alerts_stream_maxlen=_int("COLLECTOR_ALERTS_STREAM_MAXLEN", 10_000),
             backend_url=(os.environ.get("ANOMALYWATCH_API_URL") or "").strip(),
             collector_code=(os.environ.get("COLLECTOR_CODE") or "").strip(),
             collector_token=(os.environ.get("COLLECTOR_TOKEN") or "").strip(),

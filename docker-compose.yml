@@ -32,17 +32,24 @@ services:
 
   redis:
     image: docker.io/library/redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     # Durable AOF persistence so acknowledged batches survive a container restart.
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    # Optional password protection with REDIS_PASSWORD for multi-VM deployments.
+    command: >
+      sh -c 'exec redis-server --appendonly yes --appendfsync everysec $${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}'
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli $${REDIS_PASSWORD:+-a \"$$REDIS_PASSWORD\"} ping"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks: [anomaly-watch]
-    expose: ["6379"]
+    # Local only by default. deploy/vm/docker-compose.hub.yml publishes it on the
+    # VM's private IP for the web app.
+    ports:
+      - "${REDIS_BIND:-127.0.0.1}:6379:6379"
 
   detector:
     build:
@@ -135,6 +142,10 @@ services:
       # Opt-in compliance archive. Unset means normal lines are discarded after
       # scoring, which is the documented default (design.md D7).
       COLLECTOR_RAW_ARCHIVE_DIR: "${COLLECTOR_RAW_ARCHIVE_DIR:-}"
+      # Redis Streams alert publisher for downstream business API / dashboard
+      COLLECTOR_ALERTS_STREAM_ENABLED: "${COLLECTOR_ALERTS_STREAM_ENABLED:-1}"
+      COLLECTOR_ALERTS_STREAM_KEY: "${COLLECTOR_ALERTS_STREAM_KEY:-anomaly_watch:alerts}"
+      COLLECTOR_ALERTS_STREAM_MAXLEN: "${COLLECTOR_ALERTS_STREAM_MAXLEN:-10000}"
       # Node heartbeats to AnomalyWatch. Off unless all three are set. The
       # token is the collector's agent credential, shown once when the
       # collector is registered in AnomalyWatch (Configuration > Collectors).

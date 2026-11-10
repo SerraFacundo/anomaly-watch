@@ -1,0 +1,171 @@
+# The root docker-compose.yml for a VM that pulls published images instead of
+# building them. Same services and env names; `build:` becomes `image:`, every
+# service restarts with the VM, and two ports are published on the private IP.
+#
+# Next to this file the VM needs, with the same relative paths:
+#   .env                                      see deploy/vm/SETUP.md
+#   deploy/nginx/nginx.conf
+#   deploy/nginx/20-resolver-from-resolv-conf.sh
+#   deploy/nginx/certs/server.{crt,key}       generated on the VM
+#   models/cache/modernbert-ft-v3/            weights, downloaded on the VM
+#   tools/agent_token.py                      to issue agent tokens
+
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-anomaly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-anomaly}
+      POSTGRES_DB: ${POSTGRES_DB:-anomaly_watch}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-anomaly} -d ${POSTGRES_DB:-anomaly_watch}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [anomaly-watch]
+    expose: ["5432"]
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command: >
+      sh -c 'exec redis-server --appendonly yes --appendfsync everysec $${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli $${REDIS_PASSWORD:+-a \"$$REDIS_PASSWORD\"} ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [anomaly-watch]
+    # The web app's API reads the alert stream from here. REDIS_BIND is the VM's
+    # private IP: this port must never be reachable from the internet.
+    ports:
+      - "${REDIS_BIND:-127.0.0.1}:6379:6379"
+
+  detector:
+    image: ${DETECTOR_IMAGE:-ivan75/anomaly-watch:detector}
+    restart: unless-stopped
+    environment:
+      DETECTOR_MODEL_KEY: "${DETECTOR_MODEL_KEY:-modernbert-ft-v3}"
+      DETECTOR_THRESHOLD: "${DETECTOR_THRESHOLD:-0.5}"
+      DETECTOR_MAX_BATCH_SIZE: "${DETECTOR_MAX_BATCH_SIZE:-256}"
+      DETECTOR_MAX_LENGTH: "${DETECTOR_MAX_LENGTH:-256}"
+      DETECTOR_NUM_THREADS: "${DETECTOR_NUM_THREADS:-2}"
+      HF_HUB_OFFLINE: "1"
+      ANOMALY_WATCH_MODEL_CACHE: /models
+    volumes:
+      - ./models/cache:/models:ro
+    # For the web app's status card (ML_DETECTOR_URL). /score has no auth, so
+    # DETECTOR_BIND must be the VM's private IP, never 0.0.0.0.
+    ports:
+      - "${DETECTOR_BIND:-127.0.0.1}:8003:8003"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8003/readyz',timeout=4).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    networks: [anomaly-watch]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ingest:
+    image: ${INGEST_IMAGE:-ivan75/anomaly-watch:ingest}
+    restart: unless-stopped
+    environment:
+      ANOMALY_WATCH_DSN: "postgresql://${POSTGRES_USER:-anomaly}:${POSTGRES_PASSWORD:-anomaly}@postgres:5432/${POSTGRES_DB:-anomaly_watch}"
+      QUEUE_BACKEND: "${QUEUE_BACKEND:-redis}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      REDIS_QUEUE_KEY: "${REDIS_QUEUE_KEY:-anomaly_watch:logs}"
+      INGEST_SPOOL_MAX_RECORDS: "${INGEST_SPOOL_MAX_RECORDS:-100000}"
+      INGEST_BACKPRESSURE_RECORDS: "${INGEST_BACKPRESSURE_RECORDS:-80000}"
+    volumes:
+      - ./tools:/app/tools:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8004/readyz',timeout=4).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks: [anomaly-watch]
+    expose: ["8004"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  collector:
+    image: ${COLLECTOR_IMAGE:-ivan75/anomaly-watch:collector}
+    restart: unless-stopped
+    # Single replica: see the root docker-compose.yml.
+    deploy:
+      replicas: 1
+    environment:
+      ANOMALY_WATCH_DSN: "postgresql://${POSTGRES_USER:-anomaly}:${POSTGRES_PASSWORD:-anomaly}@postgres:5432/${POSTGRES_DB:-anomaly_watch}"
+      QUEUE_BACKEND: "${QUEUE_BACKEND:-redis}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      REDIS_QUEUE_KEY: "${REDIS_QUEUE_KEY:-anomaly_watch:logs}"
+      COLLECTOR_QUEUE_BATCH_SIZE: "${COLLECTOR_QUEUE_BATCH_SIZE:-128}"
+      COLLECTOR_BATCH_SIZE: "${COLLECTOR_BATCH_SIZE:-32}"
+      COLLECTOR_DRAIN_STATE: /state/drain3.state
+      COLLECTOR_DETECTOR_ENDPOINT: "http://detector:8003"
+      COLLECTOR_CACHE_ENABLED: "${COLLECTOR_CACHE_ENABLED:-1}"
+      COLLECTOR_CACHE_MAX_ENTRIES: "${COLLECTOR_CACHE_MAX_ENTRIES:-10000}"
+      COLLECTOR_SHED_SAMPLE_AT: "${COLLECTOR_SHED_SAMPLE_AT:-20000}"
+      COLLECTOR_SHED_LEVEL_AT: "${COLLECTOR_SHED_LEVEL_AT:-50000}"
+      COLLECTOR_ALERTS_STREAM_ENABLED: "${COLLECTOR_ALERTS_STREAM_ENABLED:-1}"
+      COLLECTOR_ALERTS_STREAM_KEY: "${COLLECTOR_ALERTS_STREAM_KEY:-anomaly_watch:alerts}"
+      COLLECTOR_ALERTS_STREAM_MAXLEN: "${COLLECTOR_ALERTS_STREAM_MAXLEN:-10000}"
+      # Node heartbeats to AnomalyWatch. Off unless all three are set (SETUP.md, step 7).
+      ANOMALYWATCH_API_URL: "${ANOMALYWATCH_API_URL:-}"
+      COLLECTOR_CODE: "${COLLECTOR_CODE:-}"
+      COLLECTOR_TOKEN: "${COLLECTOR_TOKEN:-}"
+      COLLECTOR_HEARTBEAT_INTERVAL_S: "${COLLECTOR_HEARTBEAT_INTERVAL_S:-60}"
+    volumes:
+      - drain-state:/state
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8005/readyz',timeout=4).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [anomaly-watch]
+    expose: ["8005"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      detector:
+        condition: service_healthy
+
+  nginx:
+    image: docker.io/library/nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+      - ./deploy/nginx/20-resolver-from-resolv-conf.sh:/docker-entrypoint.d/20-resolver-from-resolv-conf.sh:ro
+    ports:
+      - "443:443"
+      - "80:80"
+    networks: [anomaly-watch]
+    depends_on:
+      - ingest
+
+volumes:
+  postgres-data:
+  redis-data:
+  drain-state:
+
+networks:
+  anomaly-watch:
+    driver: bridge
