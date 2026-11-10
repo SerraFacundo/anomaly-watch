@@ -38,6 +38,30 @@ Procesar un archivo de log de ejemplo:
 uv run python tools/replay.py data/samples/HDFS_2k.log
 ```
 
+## Heartbeat de nodos a AnomalyWatch
+
+El `log-collector` le informa a AnomalyWatch, cada minuto, cuándo reportó por
+última vez cada host (`agents.last_seen` del `ingest-service`). Con eso,
+AnomalyWatch marca como desconectado al host que deja de mandar logs.
+
+| Variable | Qué es |
+|---|---|
+| `ANOMALYWATCH_API_URL` | URL base de la API de AnomalyWatch |
+| `COLLECTOR_CODE` | `code` del collector registrado en AnomalyWatch |
+| `COLLECTOR_TOKEN` | Credencial de agente de ese collector (se muestra una sola vez al registrarlo) |
+| `COLLECTOR_HEARTBEAT_INTERVAL_S` | Cada cuántos segundos se reporta (default 60) |
+
+Sin las tres primeras, el heartbeat queda apagado y el pipeline funciona igual.
+Cada host tiene que existir como nodo de ese collector en AnomalyWatch, con el
+mismo hostname (o `code`) que usa el agente. Los que no, aparecen en
+`GET /status` del collector, en `node_heartbeat.rejected`.
+
+## Tests
+
+```bash
+uv run pytest
+```
+
 ## Estructura
 
 | Ruta | Qué hay |

@@ -124,6 +124,11 @@ services:
       COLLECTOR_ALERTS_STREAM_ENABLED: "${COLLECTOR_ALERTS_STREAM_ENABLED:-1}"
       COLLECTOR_ALERTS_STREAM_KEY: "${COLLECTOR_ALERTS_STREAM_KEY:-anomaly_watch:alerts}"
       COLLECTOR_ALERTS_STREAM_MAXLEN: "${COLLECTOR_ALERTS_STREAM_MAXLEN:-10000}"
+      # Node heartbeats to AnomalyWatch. Off unless all three are set (SETUP.md, step 7).
+      ANOMALYWATCH_API_URL: "${ANOMALYWATCH_API_URL:-}"
+      COLLECTOR_CODE: "${COLLECTOR_CODE:-}"
+      COLLECTOR_TOKEN: "${COLLECTOR_TOKEN:-}"
+      COLLECTOR_HEARTBEAT_INTERVAL_S: "${COLLECTOR_HEARTBEAT_INTERVAL_S:-60}"
     volumes:
       - drain-state:/state
     healthcheck:

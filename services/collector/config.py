@@ -75,6 +75,21 @@ class Settings:
     redis_alerts_stream_key: str = "anomaly_watch:alerts"
     alerts_stream_maxlen: int = 10_000
 
+    # Node heartbeats to AnomalyWatch (services/collector/heartbeat.py). Off
+    # unless all three are set: a collector with no backend to talk to is a
+    # supported deployment, not a misconfiguration.
+    backend_url: str = ""
+    collector_code: str = ""
+    collector_token: str = ""
+    # AnomalyWatch gives a node 5 minutes before marking it disconnected, and
+    # ingest stamps last_seen at most once a minute. One minute keeps a live
+    # host well inside that window.
+    heartbeat_interval_s: float = 60.0
+
+    @property
+    def heartbeat_enabled(self) -> bool:
+        return bool(self.backend_url and self.collector_code and self.collector_token)
+
     @classmethod
     def from_env(cls) -> "Settings":
         spool = Path(os.environ.get("COLLECTOR_SPOOL_DIR", REPO_ROOT / "data" / "spool"))
@@ -101,4 +116,8 @@ class Settings:
             alerts_stream_enabled=_bool("COLLECTOR_ALERTS_STREAM_ENABLED", True),
             redis_alerts_stream_key=os.environ.get("COLLECTOR_ALERTS_STREAM_KEY") or "anomaly_watch:alerts",
             alerts_stream_maxlen=_int("COLLECTOR_ALERTS_STREAM_MAXLEN", 10_000),
+            backend_url=(os.environ.get("ANOMALYWATCH_API_URL") or "").strip(),
+            collector_code=(os.environ.get("COLLECTOR_CODE") or "").strip(),
+            collector_token=(os.environ.get("COLLECTOR_TOKEN") or "").strip(),
+            heartbeat_interval_s=_float("COLLECTOR_HEARTBEAT_INTERVAL_S", 60.0),
         )

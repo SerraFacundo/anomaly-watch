@@ -135,6 +135,28 @@ NSG tiene que permitirle el `443`.
 **Listo cuando:** `agent_token.py list` muestra el host como `active`, y un
 intento de login fallido real abre una alerta en la web app.
 
+### Heartbeat de los nodos
+
+Para que la web app marque como desconectado al nodo que deja de mandar logs, el
+`collector` le reporta cada minuto cuándo habló cada host. Se configura una sola
+vez, con el recolector del punto 1. El nodo tiene que tener ese recolector.
+
+En el `.env` de la VM, y después `docker compose up -d --no-deps collector`:
+
+```bash
+ANOMALYWATCH_API_URL=https://<url de la API de la web app>
+COLLECTOR_CODE=<código del recolector>
+COLLECTOR_TOKEN=<credencial del recolector, la que muestra la web app al crearlo>
+```
+
+```bash
+docker compose exec collector python -c \
+  'import json,urllib.request; print(json.load(urllib.request.urlopen("http://localhost:8005/status"))["node_heartbeat"])'
+```
+
+**Listo cuando:** eso muestra `enabled: True`, un `last_sent_at` reciente y
+`rejected` vacío, y el nodo figura conectado en la web app.
+
 ## 8. Comprobar el reinicio
 
 ```bash

@@ -6,6 +6,27 @@ on:
   pull_request:
 
 jobs:
+  unit-tests:
+    name: unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # No --extra detector/ml: the unit tests need neither model weights nor
+      # a running service.
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run pytest
+        run: uv run pytest
+
   detector-smoke:
     name: detector-service smoke
     runs-on: ubuntu-latest
@@ -65,3 +86,10 @@ jobs:
         run: |
           curl -sf localhost:8003/model | tee /dev/stderr | \
             python -c "import json,sys; d=json.load(sys.stdin); assert d['revision'] and d['revision']!='None', 'model revision not pinned'"
+
+      # The background `uv run uvicorn` holds uv's cache lock. Left running, the
+      # setup-uv post step (`uv cache prune --ci`) waits five minutes for that
+      # lock and fails the job even though every check above passed.
+      - name: Stop detector-service
+        if: always()
+        run: pkill -f "uvicorn services.detector.app" || true
