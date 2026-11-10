@@ -35,6 +35,7 @@ from cache import ScoreCache  # noqa: E402
 from common.redis_queue import QueueUnavailableError, RedisLogQueue, build_queue  # noqa: E402
 from common.spool import Spool  # noqa: E402
 from config import Settings  # noqa: E402
+from heartbeat import HeartbeatReporter, HeartbeatState, make_poster, read_sightings  # noqa: E402
 from parser import LogParser  # noqa: E402
 from pipeline import Pipeline  # noqa: E402
 from store import Store  # noqa: E402
@@ -111,6 +112,13 @@ async def run_loop() -> None:
             await asyncio.sleep(2.0)
 
 
+async def heartbeat_loop(reporter: HeartbeatReporter, interval_s: float) -> None:
+    """Report node heartbeats forever. Runs beside the pipeline, never inside it."""
+    while True:
+        await asyncio.to_thread(reporter.tick)
+        await asyncio.sleep(interval_s)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings.from_env()
@@ -154,6 +162,27 @@ async def lifespan(app: FastAPI):
     )
 
     task = asyncio.create_task(run_loop())
+
+    heartbeat_task = None
+    if settings.heartbeat_enabled:
+        reporter = HeartbeatReporter(
+            settings.backend_url,
+            settings.collector_code,
+            settings.collector_token,
+            read=lambda: read_sightings(settings.dsn),
+            post=make_poster(),
+        )
+        _state["heartbeat"] = reporter.state
+        heartbeat_task = asyncio.create_task(heartbeat_loop(reporter, settings.heartbeat_interval_s))
+        logger.info(
+            "Node heartbeats to %s as collector %s every %.0fs",
+            settings.backend_url,
+            settings.collector_code,
+            settings.heartbeat_interval_s,
+        )
+    else:
+        _state["heartbeat"] = HeartbeatState(enabled=False)
+        logger.info("Node heartbeats off (set ANOMALYWATCH_API_URL, COLLECTOR_CODE and COLLECTOR_TOKEN)")
     target = settings.redis_url if settings.queue_backend == "redis" else str(settings.spool_dir)
     logger.info(
         "log-collector ready. Queue %s (%s, max claim %d, score batch %d), cache %s, Drain3 state %s",
@@ -166,6 +195,8 @@ async def lifespan(app: FastAPI):
     )
     yield
     task.cancel()
+    if heartbeat_task is not None:
+        heartbeat_task.cancel()
     _state["archive"].close()  # type: ignore[union-attr]
 
 
@@ -227,4 +258,5 @@ def status_report() -> dict:
         "templates": _state["parser"].template_count,  # type: ignore[union-attr]
         "raw_archive_enabled": _state["archive"].enabled,  # type: ignore[union-attr]
         "last_batch_at": _state.get("last_batch_at"),
+        "node_heartbeat": _state["heartbeat"].as_dict(),  # type: ignore[union-attr]
     }

@@ -43,6 +43,15 @@ export = [
 ]
 
 # CPU wheels only. A PyME host has no GPU, and the CUDA wheels are ~2.5GB.
+# Unit tests. `uv sync` installs this group by default; the containers never do.
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"

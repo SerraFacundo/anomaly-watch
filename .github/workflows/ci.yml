@@ -6,6 +6,27 @@ on:
   pull_request:
 
 jobs:
+  unit-tests:
+    name: unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # No --extra detector/ml: the unit tests need neither model weights nor
+      # a running service.
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run pytest
+        run: uv run pytest
+
   detector-smoke:
     name: detector-service smoke
     runs-on: ubuntu-latest
