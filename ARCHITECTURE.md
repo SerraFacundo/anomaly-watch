@@ -2,7 +2,7 @@
 
 **Anomaly Watch** is a self-hosted, microservices-based log anomaly detection platform designed for PyMEs (small and medium enterprises). It collects logs from client machines, applies ML-based anomaly detection, and generates enriched alerts with MITRE ATT&CK-mapped explanations and contingency actions using a local RAG pipeline.
 
-**Deployment model:** A single Docker Compose stack runs on the PyME's central server. FluentBit agents installed on each PyME machine forward logs to the central stack over HTTPS. There is no message broker — see §3.2.
+**Deployment model:** A single Docker Compose stack runs on the PyME's central server. FluentBit agents installed on each PyME machine forward logs to the central stack over HTTPS. Redis is the queue inside the stack and carries anomalies to the web app — see §3.2.
 
 **Date of last update:** 2026-09-07
 
@@ -139,14 +139,13 @@ graph TB
 | **nginx** | Nginx | TLS termination for the agent fleet, reverse proxy, static file serving for web-app. The only host-exposed service in the stack | 80 / 443 |
 | **ollama** | Ollama | Local LLM runtime for RAG inference. Runs as container, serves model via HTTP API | 11434 |
 
-> **There is no message broker.** Kafka was specified here until the detector's
-> real throughput was measured at 29.6 records/s on CPU. A JVM broker costs
-> ~1GB resident beside a 602MB model on a single PyME box, and Kafka is built
+> **Redis is the broker; Kafka is not.** Kafka was specified here until the
+> detector's real throughput was measured at 29.6 records/s on CPU. A JVM broker
+> costs ~1GB resident beside a 602MB model on a single PyME box, and Kafka is built
 > for throughput six orders of magnitude above the few hundred lines/s this
-> system moves. The queue that absorbs producer/consumer mismatch is the
-> FluentBit disk buffer on each monitored host (§7.2); the durability boundary
-> inside the stack is a spool volume (§3.2). Conditions for reintroducing a
-> broker are recorded in §9.
+> system moves. The queue that absorbs producer/consumer mismatch is the FluentBit
+> disk buffer on each monitored host (§7.2); the durability boundary inside the
+> stack is Redis with AOF (§3.2), which also publishes anomalies to the web app.
 
 ### 2.2 Pipeline Services
 
@@ -189,7 +188,7 @@ graph TB
 
 ### 3.1 Pipeline Flow Diagram
 
-**Agent path.** No broker anywhere in it.
+**Agent path.**
 
 ```mermaid
 flowchart LR
@@ -227,17 +226,17 @@ flowchart LR
 
 ### 3.2 Transport
 
-Agents post batches of log records over HTTPS to `POST /ingest`. There is no
-message broker; the two things a broker would have provided are provided
-elsewhere:
+Agents post batches of log records over HTTPS to `POST /ingest`. Each concern a
+broker usually covers has one owner:
 
 | Concern | Mechanism |
 |---|---|
 | Absorbing producer/consumer rate mismatch | FluentBit's bounded filesystem buffer, on the monitored host (§7.2) |
-| Surviving a restart without losing an acknowledged batch | A spool volume inside the stack: `ingest-service` writes, fsyncs and atomically renames before it answers `202`, so a reader never sees a partial batch and an agent never drops records the stack has not stored |
+| Surviving a restart without losing an acknowledged batch | Redis with AOF: `ingest-service` pushes to `<prefix>:pending` before it answers `202`, and `log-collector` claims atomically into `<prefix>:inflight`. `appendfsync everysec` means a host crash can lose up to one second of acknowledged batches |
+| Delivering anomalies to the web app | The capped Redis Stream `anomaly_watch:alerts`. `log-collector` publishes and the web app's API reads it, so neither waits on the other |
 
-`log-collector` deletes a spooled batch only after it has been fully processed,
-so a crash replays that batch rather than losing it. Delivery is at-least-once
+`log-collector` clears `inflight` only after Postgres commits, so a crash replays
+that batch rather than losing it. Delivery is at-least-once
 and a duplicate costs one cache hit.
 
 **Wire contract** — `services/common/wire.py`, frozen before the first agent
@@ -672,7 +671,7 @@ retention stays a visible choice rather than a forgotten environment variable.
 |------|-----------|
 | **LogBERT training infrastructure** | **Closed — no longer applicable.** LogBERT was dropped (§3.4). Fine-tuning targets a single consumer GPU or a free-tier T4; inference is CPU-only, so PyMEs never need GPU hardware |
 | **Embedding model for RAG** | **Closed.** `nomic-ai/modernbert-embed-base`, 768 dims, apache-2.0 (§4.4). Fixes the pgvector column at `vector(768)` |
-| **Streaming topology** | **Closed — no broker.** The detector measures 29.6 records/s on CPU; a JVM broker costs ~1GB beside a 602MB model, for a load six orders of magnitude below Kafka's design point. Agent disk buffer is the queue, a spool volume is the durability boundary (§3.2). Redpanda is the recorded escape hatch if a concrete second consumer or a replay requirement ever appears |
+| **Streaming topology** | **Closed — Redis, no Kafka.** The detector measures 29.6 records/s on CPU; a JVM broker costs ~1GB beside a 602MB model, for a load six orders of magnitude below Kafka's design point. Agent disk buffer absorbs rate mismatch, Redis with AOF is the durability boundary, and a Redis Stream is the second consumer's path to the web app (§3.2) |
 | **Throughput at PyME volumes** | **Closed.** The template score cache collapses repeated lines into one inference per template. Measured end to end: **93.6%** hit rate on 19,839 real systemd journal lines (~460 records/s effective) and **99.83%** on 60,000 real nginx access lines — 102 inferences for 60,000 records. Against a 50–200 lines/s peak, both clear it comfortably. nginx turned out to be the *best* case for the cache, not the worst: its access-log format is rigidly uniform and Drain3 collapses the URL, giving 0.6 templates per 1,000 lines against journal's 20.3 |
 
 ### Open
